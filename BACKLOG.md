@@ -2,7 +2,7 @@
 
 | # | P | Item | Acceptance test | Status |
 |---|---|------|-----------------|--------|
-| 1 | P1 | Remove PFC internal/branding references from visible text ("PFC Credit Policy Compendium", "Power Sector & PFC Hub", "PFC Intelligence Hub", "Open PFC News Radar", "PFC & REC Radar" label). Rename to neutral power-sector wording. Keep PFC.NS as a stock. | Harness wording checks PASS | open |
+| 1 | P1 | PFC private data: delete the "PFC Credit Policy Compendium & Lending Verticals" table and every compendium mention; remove "PFC" from hub/hero/section titles ("Power Sector & PFC Hub", "PFC Intelligence Hub") and the "PFC & REC Radar · 45+ Policies" tile. Keep PFC-NRD / "Open PFC News Radar" and PFC.NS stock data. | Harness PFC wording checks PASS | open |
 | 2 | P1 | Fix mobile horizontal scroll on #research, #dhamma, #options, #backtest (600–740 px overflow). | Harness mobile overflow PASS for these | open |
 | 3 | P1 | Fix mobile horizontal scroll on #hub and #radar (43–67 px). | Harness mobile overflow PASS | open |
 | 4 | P2 | Show an "Data as of <date>" stamp on every data-driven section, read from the embedded snapshot metadata (no invented dates). | Stamp visible in all data sections | open |
