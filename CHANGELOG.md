@@ -19,3 +19,9 @@
 - Done: #8 removed the random 2-second price walk; prices are now the snapshot or a quote a public source actually returned. Top bar shows "Snapshot <date>" or "Quotes HH:MM IST · <source> · may be delayed"; dot is green only after a real quote. "Live Stream"/"Real-time" labels replaced with "Auto-refresh" and "Not real-time". Sync Now reports success or "No source reachable". Phone: long hero titles wrap.
 - Blocked: #11 snapshot Nifty close differs from TradingView by ~189 pts (needs new snapshot); #12 live data source (needs decision).
 - Harness: PASS 73 · FAIL 0 → PASS 73 · FAIL 0. Offline: Nifty pill unchanged over 10 s. Mocked source: pill and clock update.
+
+## 2026-11-04 · daily run 2
+- Done: #4 data-as-of stamps (options, IPO; chart "● LIVE" → "Snapshot <date>", real quote shows IST time; quoted rows no longer hard-code "2026-11-03 LIVE"). #10 hub copy in third person. #5 day-trade data and scanner load on first visit; boot to ready 3.3 s → 2.45 s.
+- Blocked: none new (#11, #12 still wait for Jitender).
+- Harness: PASS 73 · FAIL 0 → PASS 73 · FAIL 0.
+- Audit added: #13 (P1 synthetic intraday candles shown as real), #14 (P1 stale IPO tracker), #15 (P2 unsourced atlas/power figures).
