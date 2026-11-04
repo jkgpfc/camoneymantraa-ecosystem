@@ -2338,10 +2338,10 @@ async function boot() {
     $('#mktRibbon').innerHTML = idxHtml + `<div class="mp-pill" data-drill="universe:overview"><b>🇮🇳 Listed Universe X-Ray</b><span class="mp-val">${G.rows.length.toLocaleString('en-IN')} cos</span><span class="muted">· ₹${totMcap.toLocaleString('en-IN')}L cr MCap · <span class="up">${adv}▲</span> <span class="dn">${dec}▼</span></span></div>`;
     $('#mktRibbon').querySelectorAll('[data-mpid]').forEach(el => el.onclick = () => openChart(el.dataset.mpid));
   }
-  rsInit(); chInit(); scInit(); btInit(); obInit(); dtInit(); if (typeof initGodMode === 'function') initGodMode(); route(); newsBoot().catch(e => console.warn('news', e));
+  rsInit(); chInit(); btInit(); obInit(); if (typeof initGodMode === 'function') initGodMode(); route(); newsBoot().catch(e => console.warn('news', e));
 }
 function show(p) { for (const k of ['hub', 'atl', 'pwr', 'rs', 'nw', 'ch', 'dt', 'sc', 'bt', 'ob', 'ipo', 'dha', 'ab']) { $('#p_' + k).style.display = k === p ? '' : 'none'; $('#n_' + k).classList.toggle('active', k === p); }
-  document.body.dataset.page = p; if (p === 'dt' && !DT.out) dtInit(); if (p === 'ch') setTimeout(() => G.chart && drawChart(), 30); if (typeof updateConvBar === 'function') updateConvBar(p); }
+  document.body.dataset.page = p; if (p === 'dt' && !DT.out) dtInit(); if (p === 'sc' && G.D && !G.scan) scInit(); if (p === 'ch') setTimeout(() => G.chart && drawChart(), 30); if (typeof updateConvBar === 'function') updateConvBar(p); }
 function route() { const h = (location.hash || '#research').slice(1), m = {hub: 'hub', atlas: 'atl', power: 'pwr', research: 'rs', radar: 'nw', chart: 'ch', scanner: 'sc', daytrade: 'dt', backtest: 'bt', options: 'ob', ipo: 'ipo', dhamma: 'dha', about: 'ab'}; show(m[h] || 'rs'); }
 window.addEventListener('hashchange', route);
 
