@@ -8,9 +8,10 @@ const ROUTES = { hub:'p_hub', atlas:'p_atl', power:'p_pwr', research:'p_rs', rad
 const SIZE_LIMIT_MB = 20;
 // Public commercial site: no internal-employer material, no advice-like wording.
 const BANNED = [
-  [/PFC Credit Policy Compendium/i, 'internal PFC policy document named on public site'],
-  [/PFC[- ]NRD|LPCU|RMD-I|Resource Mobilisation Dep/i, 'internal PFC unit/app name'],
-  [/PFC (Hub|Intelligence Hub|News Radar)|Power Sector &amp; PFC|&amp; PFC Hub/i, 'site branded around employer'],
+  // Only PFC-NRD (PFC News Radar) may be public. All other PFC data/branding stays private.
+  // Allowed: "PFC-NRD", "PFC NRD", "PFC News Radar", stock ticker "PFC.NS" / 'PFC' symbol strings in code.
+  [/\bPFC\b(?![-\s]?NRD|\s+News Radar|\.NS|['"])/, 'PFC private data/branding (only PFC-NRD may be public)'],
+  [/Credit Policy Compendium|LPCU|RMD-I|Resource Mobilisation Dep|Lending Verticals/i, 'PFC internal policy/unit material'],
   [/\b(sure[- ]shot|guaranteed returns?|buy now|sell now|jackpot)\b/i, 'advice-like wording (SEBI)'],
 ];
 const REQUIRED = [/not investment advice/i, /SEBI/];

@@ -10,8 +10,10 @@ through small, verified improvements every day. Quality over quantity. One good 
 2. A change is accepted only if: FAIL count does not rise, PASS count does not fall, and the target item is met.
 3. Never invent numbers, quotes, data, sources or dates. Leave the embedded data blobs
    (`<script type="application/octet-stream">` ids: snap, dtBin, newsSnap, dtMeta) untouched unless a backlog item says so.
-4. Public commercial site: no PFC internal material (Credit Policy Compendium, PFC-NRD, LPCU, RMD-I, internal notes),
-   no branding around PFC. PFC/REC as listed stocks (e.g. `PFC.NS`) in equity data are fine.
+4. PFC data rule: ONLY PFC-NRD (PFC News Radar) may appear publicly. Every other PFC item stays strictly private:
+   credit policy / compendium content, lending verticals, LPCU, RMD-I, IRS/treasury/borrowing data, internal notes,
+   and "PFC Hub"-style branding. Remove such content entirely; do not just rename it.
+   PFC/REC as listed stocks (e.g. `PFC.NS`) in public market data are fine.
 5. SEBI: education only. No buy/sell calls, targets, tips or return promises. Keep every disclaimer.
 6. Keep it one self-contained HTML file that works offline from file://. No new CDNs. Size ≤ 20 MB.
 7. Edit surgically (targeted string edits). Never regenerate or rewrite the whole file.
