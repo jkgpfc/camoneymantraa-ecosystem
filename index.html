@@ -1607,6 +1607,7 @@ header { gap: 6px 10px !important; padding: 7px 14px !important; }
 body { padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
 footer { padding-bottom: calc(6px + env(safe-area-inset-bottom)); }
 #installBtn[hidden] { display: none !important; }
+.asofbox::before { display: none; } /* status dot is #liveDot: green only after a real quote */
 #installHelp { max-width: 340px; border: 1px solid var(--border-hairline); border-radius: 16px; background: var(--glass-elevated); color: var(--ink-1); padding: 18px; font: inherit; }
 #installHelp::backdrop { background: rgba(0, 0, 0, 0.55); }
 #installHelp p { margin: 0 0 12px; }
@@ -1620,6 +1621,7 @@ footer { padding-bottom: calc(6px + env(safe-area-inset-bottom)); }
   header nav { flex-wrap: nowrap !important; }
   header nav .nav { flex: 0 0 auto; }
   .brand .muted { display: none; }
+  .page-hero h1, .hero-sub, .btsec h3 { overflow-wrap: anywhere; }
   #convBar { position: static; flex-wrap: nowrap; justify-content: flex-start; overflow-x: auto; scrollbar-width: none; }
   #convBar .conv-group { flex-wrap: nowrap; flex: 0 0 auto; }
   #globalTfBar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
@@ -1632,9 +1634,9 @@ footer { padding-bottom: calc(6px + env(safe-area-inset-bottom)); }
 </style></head><body>
 <header><div class="brand" onclick="location.hash='#hub'">🌐 CA Money Mantra <span class="muted">www.camoneymantraa.com</span></div><button id="installBtn" class="nav" type="button" hidden title="Install CA Money Mantra as an app on this device">⬇ Install app</button>
 <nav><a id="n_hub" class="nav" href="#hub">🏛 Ecosystem Hub</a><a id="n_atl" class="nav" href="#atlas">🌍 Meridian Atlas</a><a id="n_pwr" class="nav" href="#power">⚡ Power Sector</a><a id="n_rs" class="nav" href="#research">📈 Equity Research</a><a id="n_nw" class="nav" href="#radar">📡 News Radar</a><a id="n_ch" class="nav" href="#chart">Charts</a><a id="n_sc" class="nav" href="#scanner">Scanner</a><a id="n_dt" class="nav" href="#daytrade">🎯 Day-Trade Finder</a><a id="n_bt" class="nav" href="#backtest">Backtest</a><a id="n_ob" class="nav" href="#options">Options BT</a><a id="n_ipo" class="nav" href="#ipo">🚀 IPO Radar</a><a id="n_dha" class="nav" href="#dhamma">☸ Buddha-Dhamma</a><a id="n_ab" class="nav" href="#about">About / Disclaimer</a></nav>
-<div class="asofbox" id="asofBox"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#10b981;box-shadow:0 0 8px #10b981;margin-right:6px;animation:pulseDot 1.4s infinite"></span><b>LIVE NSE/BSE</b> · <b class="asof" id="liveClock">03 Nov 2026 · LIVE</b></div><a id="userChip" class="muted" href="#about" title="Your acceptance record"></a><span id="liveStreamBtn" class="nav live-on" style="cursor:pointer" title="Toggle Real-Time NSE/BSE Live Price & Candle Stream">🟢 Live Stream: ON</span><span id="syncNowBtn" class="nav" style="cursor:pointer" title="Force immediate exchange quote & chart bar sync">⚡ Sync Now</span><span id="liveBtn" class="nav" style="cursor:pointer" title="Optional SEBI Safe-Harbor 90-Day Historical Lag Lock">🛡 90D-Lag</span><button id="themeBtn" class="nav">☀ Light</button></header>
+<div class="asofbox" id="asofBox"><span id="liveDot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#64748b;margin-right:6px"></span><b>NSE/BSE</b> · <b id="liveClock">Snapshot <span class="asof">03 Nov 2026</span></b></div><a id="userChip" class="muted" href="#about" title="Your acceptance record"></a><span id="liveStreamBtn" class="nav live-on" style="cursor:pointer" title="When online, try free public sources for delayed quotes every 9 seconds">🔄 Auto-refresh: ON</span><span id="syncNowBtn" class="nav" style="cursor:pointer" title="Try the public quote sources now">⚡ Sync Now</span><span id="liveBtn" class="nav" style="cursor:pointer" title="Optional SEBI Safe-Harbor 90-Day Historical Lag Lock">🛡 90D-Lag</span><button id="themeBtn" class="nav">☀ Light</button></header>
 <dialog id="installHelp" aria-labelledby="installHelpT"><h3 id="installHelpT" style="margin-top:0">Install CA Money Mantra</h3><p id="installHelpTxt"></p><button class="small" type="button" onclick="this.closest('dialog').close()">OK</button></dialog>
-<div class="disclaimer">🟢 <b>LIVE NSE/BSE MARKET STREAM (www.camoneymantraa.com)</b> · Real-time quotes, 20-timeframe charts &amp; live candlestick stream active (<b class="asof">03 Nov 2026</b>). Purely mechanical &amp; educational analysis — zero buy/sell recommendations; not a SEBI-registered adviser.</div>
+<div class="disclaimer">📊 <b>NSE/BSE MARKET DATA (www.camoneymantraa.com)</b> · Not real-time. Prices come from a snapshot taken on <b class="asof">03 Nov 2026</b>; when online, the app tries free public sources for delayed quotes and shows their time in the top bar. Purely mechanical &amp; educational analysis — zero buy/sell recommendations; not a SEBI-registered adviser.</div>
 <div id="mktRibbon"></div>
 <div id="convBar">
   <div class="conv-group" id="convJumps"></div>
@@ -2324,7 +2326,7 @@ async function boot() {
   const txt = await new Response(new Blob([bin]).stream().pipeThrough(new DecompressionStream('gzip'))).text(), D = JSON.parse(txt);
   G.D = D; G.rows = D.eq.rows.map(r => Object.fromEntries(D.eq.cols.map((c, i) => [c, r[i]]))); G.series = D.series; D.series.forEach(s => G.byId[s.id] = s);
   const ad = new Date(D.asof + 'T00:00:00').toLocaleDateString('en-IN', {day: 'numeric', month: 'short', year: 'numeric'});
-  document.querySelectorAll('.asof').forEach(e => e.textContent = ad);
+  G.asofStr = ad; document.querySelectorAll('.asof').forEach(e => e.textContent = ad);
   $('#abSrc').textContent = D.sources; $('#loading').remove();
   if ($('#mktRibbon')) {
     const idxs = ['^NSEI', '^NSEBANK', '^BSESN', '^INDIAVIX'].filter(id => G.byId[id]);
@@ -3959,6 +3961,7 @@ async function fetchJsonViaRelays(targetUrl, timeoutMs = 4500) {
 function applyLiveQuoteToApp(id, price, prevClose, high, low, open, vol) {
   if (!price || !isFinite(price) || price <= 0) return;
   if (SAFE && SAFE.lag90) return;
+  LIVE_FEED.lastReal = Date.now();
   price = Math.round(price * 100) / 100;
 
   // 1. Update series in G.cache[id] if present
@@ -4141,6 +4144,7 @@ async function syncLiveNetworkQuotes() {
     if (tvRes && tvRes.ok) {
       const js = await tvRes.json();
       if (js && Array.isArray(js.data)) {
+        LIVE_FEED.src = 'TradingView';
         js.data.forEach(item => {
           const id = tvMap[item.s];
           const [close, chgPct, chgAbs, open, high, low, vol] = item.d || [];
@@ -4162,6 +4166,7 @@ async function syncLiveNetworkQuotes() {
     const sparkUrl = `https://query1.finance.yahoo.com/v8/finance/spark?symbols=${encodeURIComponent(ySyms.join(','))}&range=5d&interval=1d`;
     const spData = await fetchJsonViaRelays(sparkUrl, 4200);
     if (spData && typeof spData === 'object') {
+      LIVE_FEED.src = 'Yahoo Finance';
       Object.entries(spData).forEach(([sym, obj]) => {
         if (obj && Array.isArray(obj.close) && obj.close.length > 0) {
           const closes = obj.close.filter(x => x != null && isFinite(x));
@@ -4185,6 +4190,7 @@ async function syncLiveNetworkQuotes() {
       const res0 = chJson && chJson.chart && chJson.chart.result && chJson.chart.result[0];
       if (res0 && res0.meta && res0.meta.regularMarketPrice > 0) {
         const m = res0.meta;
+        LIVE_FEED.src = 'Yahoo Finance';
         const p = m.regularMarketPrice;
         const prev = m.chartPreviousClose || m.previousClose || p;
         const hi = m.regularMarketDayHigh || p;
@@ -4198,67 +4204,21 @@ async function syncLiveNetworkQuotes() {
   }
 }
 
-// Continuous 2-second Real-Time Order-Book Tick Streamer so prices & candles visibly stream live
-function tickLiveStream() {
-  if (!LIVE_FEED.on || (SAFE && SAFE.lag90)) return;
-  LIVE_FEED.ticks++;
-
-  // Build list of symbols to tick on this cycle: 16 indices + active chart symbol + active research symbol + random visible watchlist/screener stocks
-  const targets = new Set(['^NSEI', '^NSEBANK', '^BSESN', '^INDIAVIX', '^CNXIT', '^NSMIDCP', '^NSEMDCP50', '^CNXSC', '^CRSLDX', '^CNXPSUBANK']);
-  if (CH && CH.id) targets.add(CH.id);
-  if (R && R.sel && R.sel.id) targets.add(R.sel.id);
-  for (let i = 0; i < 8; i++) {
-    const s = G.series[(LIVE_FEED.ticks * 7 + i * 13) % G.series.length];
-    if (s) targets.add(s.id);
-  }
-
-  targets.forEach(id => {
-    const s = G.byId[id];
-    const row = G.rows.find(r => r.id === id);
-    if (!s && !row) return;
-
-    const d = s ? ser(id) : null;
-    const n = d ? d.c.length : 0;
-    const curPrice = d && n > 0 ? d.c[n - 1] : (row ? row.price : 0);
-    if (!curPrice || curPrice <= 0) return;
-
-    const prevClose = d && n > 1 ? d.c[n - 2] : (curPrice / (1 + ((row && row.chg) || 0.5) / 100));
-    if (!LIVE_FEED.anchors[id]) {
-      LIVE_FEED.anchors[id] = {
-        price: curPrice,
-        prevClose,
-        open: d && n > 0 ? d.o[n - 1] : curPrice,
-        high: d && n > 0 ? d.h[n - 1] : curPrice,
-        low: d && n > 0 ? d.l[n - 1] : curPrice,
-        vol: d && n > 0 ? d.v[n - 1] : 100000
-      };
-    }
-    const anc = LIVE_FEED.anchors[id];
-    // Mean-reverting micro-tick around anchor price (±0.25% max band) so prices stay realistic & accurate
-    const pull = (anc.price - curPrice) * 0.25;
-    const stepPct = (Math.random() - 0.492) * 0.0009; // ~0.04% tick
-    let nextP = curPrice + pull + curPrice * stepPct;
-    nextP = Math.max(anc.price * 0.9975, Math.min(anc.price * 1.0025, nextP));
-    nextP = Math.round(nextP * 100) / 100;
-    if (nextP === curPrice) nextP = Math.round((curPrice + (Math.random() > 0.5 ? 0.05 : -0.05)) * 100) / 100;
-
-    const nextHi = Math.max(anc.high, nextP);
-    const nextLo = Math.min(anc.low, nextP);
-    const nextVol = (anc.vol || 100000) + Math.round(Math.random() * 1200);
-    anc.high = nextHi;
-    anc.low = nextLo;
-    anc.vol = nextVol;
-
-    applyLiveQuoteToApp(id, nextP, anc.prevClose, nextHi, nextLo, anc.open, nextVol);
-  });
-}
-
+// No simulated ticks: every price shown is the embedded snapshot or a quote a public source actually returned.
 function updateLiveClock() {
   if (SAFE && SAFE.lag90) return;
   const clk = $('#liveClock');
   if (!clk) return;
-  const nowStr = new Date().toLocaleTimeString('en-IN', {timeZone: 'Asia/Kolkata', hour12: false});
-  clk.textContent = LIVE_FEED.on ? `03 Nov 2026 · ${nowStr} IST (LIVE)` : `03 Nov 2026 · Paused`;
+  const snap = (typeof G !== 'undefined' && G.asofStr) || 'snapshot';
+  const fresh = LIVE_FEED.on && LIVE_FEED.lastReal && Date.now() - LIVE_FEED.lastReal < 120000;
+  const dot = $('#liveDot');
+  if (dot) { dot.style.background = fresh ? '#10b981' : '#64748b'; dot.style.boxShadow = fresh ? '0 0 8px #10b981' : 'none'; dot.style.animation = fresh ? 'pulseDot 1.4s infinite' : 'none'; }
+  if (fresh) {
+    const t = new Date(LIVE_FEED.lastReal).toLocaleTimeString('en-IN', {timeZone: 'Asia/Kolkata', hour12: false, hour: '2-digit', minute: '2-digit'});
+    clk.textContent = `Quotes ${t} IST · ${LIVE_FEED.src || 'public source'} · may be delayed`;
+  } else {
+    clk.textContent = `Snapshot ${snap}` + (LIVE_FEED.on ? '' : ' · auto-refresh off');
+  }
 }
 
 function startLiveMarketEngine() {
@@ -4268,7 +4228,6 @@ function startLiveMarketEngine() {
 
   updateLiveClock();
   LIVE_FEED.clockTimer = setInterval(updateLiveClock, 1000);
-  LIVE_FEED.tickTimer = setInterval(tickLiveStream, 2000);
   LIVE_FEED.netTimer = setInterval(syncLiveNetworkQuotes, 9000);
   setTimeout(syncLiveNetworkQuotes, 300);
 
@@ -4277,18 +4236,20 @@ function startLiveMarketEngine() {
     lBtn.onclick = () => {
       LIVE_FEED.on = !LIVE_FEED.on;
       lBtn.classList.toggle('live-on', LIVE_FEED.on);
-      lBtn.textContent = LIVE_FEED.on ? '🟢 Live Stream: ON' : '⏸ Live Stream: PAUSED';
+      lBtn.textContent = LIVE_FEED.on ? '🔄 Auto-refresh: ON' : '⏸ Auto-refresh: OFF';
       updateLiveClock();
-      if (LIVE_FEED.on) { tickLiveStream(); syncLiveNetworkQuotes(); }
+      if (LIVE_FEED.on) syncLiveNetworkQuotes();
     };
   }
   const sBtn = $('#syncNowBtn');
   if (sBtn) {
     sBtn.onclick = () => {
-      sBtn.textContent = '🔄 Syncing…';
-      tickLiveStream();
+      sBtn.textContent = '🔄 Checking…';
+      const t0 = Date.now();
       syncLiveNetworkQuotes().finally(() => {
-        setTimeout(() => { sBtn.textContent = '⚡ Synced Live'; setTimeout(() => { sBtn.textContent = '⚡ Sync Now'; }, 1500); }, 300);
+        updateLiveClock();
+        sBtn.textContent = LIVE_FEED.lastReal >= t0 ? '✓ Quotes updated' : '✕ No source reachable';
+        setTimeout(() => { sBtn.textContent = '⚡ Sync Now'; }, 2500);
       });
     };
   }
@@ -4419,6 +4380,6 @@ function initGodMode() {
   });
 })();
 /* Phone: keep the active section tab in view inside the swipeable top bar. */
-window.addEventListener('hashchange', function () { setTimeout(function () { var a = document.querySelector('nav .nav.active'); if (a && innerWidth <= 700) a.scrollIntoView({ inline: 'center', block: 'nearest' }); }, 50); });
+window.addEventListener('hashchange', function () { setTimeout(function () { var a = document.querySelector('nav .nav.active'); if (a && innerWidth <= 700) a.scrollIntoView({ inline: 'nearest', block: 'nearest' }); }, 50); });
 </script>
 </body></html>
