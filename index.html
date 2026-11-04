@@ -1,5 +1,13 @@
 <!doctype html>
-<html lang="en-IN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="en-IN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#03060e">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%232b99ff'/%3E%3Cstop offset='1' stop-color='%234f46e5'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='14' fill='url(%23g)'/%3E%3Ctext x='32' y='41' font-family='Arial,sans-serif' font-weight='800' font-size='27' fill='%23fff' text-anchor='middle'%3ECA%3C/text%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Money Mantra">
 <title>CA Money Mantra · www.camoneymantraa.com · Unified Macro Atlas, Power Sector, Equity Backtest & Buddha-Dhamma Ecosystem</title>
 <meta name="description" content="Indian equity screener, charts, scanner and backtester. Education only. Not investment advice.">
 <style>
@@ -1594,10 +1602,38 @@ header { gap: 6px 10px !important; padding: 7px 14px !important; }
 @media (max-width: 1100px) {
   #chMultiGrid.cols-6 { grid-template-columns: 1fr 1fr; }
 }
+<style id="appShell">
+/* ===== Installable app shell: phone, tablet, Windows, Mac ===== */
+body { padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
+footer { padding-bottom: calc(6px + env(safe-area-inset-bottom)); }
+#installBtn[hidden] { display: none !important; }
+#installHelp { max-width: 340px; border: 1px solid var(--border-hairline); border-radius: 16px; background: var(--glass-elevated); color: var(--ink-1); padding: 18px; font: inherit; }
+#installHelp::backdrop { background: rgba(0, 0, 0, 0.55); }
+#installHelp p { margin: 0 0 12px; }
+@media (display-mode: standalone) { #installBtn { display: none !important; } }
+@media (max-width: 700px) {
+  body { padding-bottom: 0; -webkit-text-size-adjust: 100%; }
+  header { flex-wrap: nowrap !important; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none;
+    padding-top: max(7px, env(safe-area-inset-top)) !important; }
+  header::-webkit-scrollbar, header nav::-webkit-scrollbar { display: none; }
+  header > * { flex: 0 0 auto; white-space: nowrap; }
+  header nav { flex-wrap: nowrap !important; }
+  header nav .nav { flex: 0 0 auto; }
+  .brand .muted { display: none; }
+  #convBar { position: static; flex-wrap: nowrap; justify-content: flex-start; overflow-x: auto; scrollbar-width: none; }
+  #convBar .conv-group { flex-wrap: nowrap; flex: 0 0 auto; }
+  #globalTfBar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  #convBar > *, #convBar .conv-group > *, #globalTfBar > * { flex: 0 0 auto; white-space: nowrap; }
+  #convBar::-webkit-scrollbar, #globalTfBar::-webkit-scrollbar { display: none; }
+  footer { position: static; }
+  .nav, button.small, .gtf-btn, .conv-pill { min-height: 36px; }
+  input:not([type=checkbox]):not([type=radio]):not([type=range]), select, textarea { font-size: 16px; }
+}
 </style></head><body>
-<header><div class="brand" onclick="location.hash='#hub'">🌐 CA Money Mantra <span class="muted">www.camoneymantraa.com</span></div>
+<header><div class="brand" onclick="location.hash='#hub'">🌐 CA Money Mantra <span class="muted">www.camoneymantraa.com</span></div><button id="installBtn" class="nav" type="button" hidden title="Install CA Money Mantra as an app on this device">⬇ Install app</button>
 <nav><a id="n_hub" class="nav" href="#hub">🏛 Ecosystem Hub</a><a id="n_atl" class="nav" href="#atlas">🌍 Meridian Atlas</a><a id="n_pwr" class="nav" href="#power">⚡ Power Sector</a><a id="n_rs" class="nav" href="#research">📈 Equity Research</a><a id="n_nw" class="nav" href="#radar">📡 News Radar</a><a id="n_ch" class="nav" href="#chart">Charts</a><a id="n_sc" class="nav" href="#scanner">Scanner</a><a id="n_dt" class="nav" href="#daytrade">🎯 Day-Trade Finder</a><a id="n_bt" class="nav" href="#backtest">Backtest</a><a id="n_ob" class="nav" href="#options">Options BT</a><a id="n_ipo" class="nav" href="#ipo">🚀 IPO Radar</a><a id="n_dha" class="nav" href="#dhamma">☸ Buddha-Dhamma</a><a id="n_ab" class="nav" href="#about">About / Disclaimer</a></nav>
 <div class="asofbox" id="asofBox"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#10b981;box-shadow:0 0 8px #10b981;margin-right:6px;animation:pulseDot 1.4s infinite"></span><b>LIVE NSE/BSE</b> · <b class="asof" id="liveClock">03 Nov 2026 · LIVE</b></div><a id="userChip" class="muted" href="#about" title="Your acceptance record"></a><span id="liveStreamBtn" class="nav live-on" style="cursor:pointer" title="Toggle Real-Time NSE/BSE Live Price & Candle Stream">🟢 Live Stream: ON</span><span id="syncNowBtn" class="nav" style="cursor:pointer" title="Force immediate exchange quote & chart bar sync">⚡ Sync Now</span><span id="liveBtn" class="nav" style="cursor:pointer" title="Optional SEBI Safe-Harbor 90-Day Historical Lag Lock">🛡 90D-Lag</span><button id="themeBtn" class="nav">☀ Light</button></header>
+<dialog id="installHelp" aria-labelledby="installHelpT"><h3 id="installHelpT" style="margin-top:0">Install CA Money Mantra</h3><p id="installHelpTxt"></p><button class="small" type="button" onclick="this.closest('dialog').close()">OK</button></dialog>
 <div class="disclaimer">🟢 <b>LIVE NSE/BSE MARKET STREAM (www.camoneymantraa.com)</b> · Real-time quotes, 20-timeframe charts &amp; live candlestick stream active (<b class="asof">03 Nov 2026</b>). Purely mechanical &amp; educational analysis — zero buy/sell recommendations; not a SEBI-registered adviser.</div>
 <div id="mktRibbon"></div>
 <div id="convBar">
@@ -4360,5 +4396,29 @@ function initGodMode() {
     }
   });
 }
+</script>
+<script>
+/* Installable app: service worker (https/localhost only), install button, iOS / macOS Safari steps. */
+(function () {
+  var web = location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+  var btn = document.getElementById('installBtn'), dlg = document.getElementById('installHelp'), txt = document.getElementById('installHelpTxt');
+  var standalone = (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+  if (web && 'serviceWorker' in navigator) window.addEventListener('load', function () { navigator.serviceWorker.register('sw.js').catch(function () {}); });
+  if (!btn || !web || standalone) return;
+  var deferred = null, ua = navigator.userAgent;
+  var ios = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  var macSafari = !ios && /Macintosh/.test(ua) && /Safari/.test(ua) && !/Chrome|Chromium|Edg|Firefox|OPR/.test(ua);
+  window.addEventListener('beforeinstallprompt', function (e) { e.preventDefault(); deferred = e; btn.hidden = false; });
+  window.addEventListener('appinstalled', function () { deferred = null; btn.hidden = true; });
+  if (ios || macSafari) btn.hidden = false;
+  btn.addEventListener('click', function () {
+    if (deferred) { deferred.prompt(); deferred.userChoice.finally(function () { deferred = null; btn.hidden = true; }); return; }
+    txt.innerHTML = ios ? 'In Safari, tap <b>Share</b> (the square with an arrow), then <b>Add to Home Screen</b>.'
+                        : 'In Safari, choose <b>File → Add to Dock</b>.';
+    if (dlg.showModal) dlg.showModal(); else alert(txt.textContent);
+  });
+})();
+/* Phone: keep the active section tab in view inside the swipeable top bar. */
+window.addEventListener('hashchange', function () { setTimeout(function () { var a = document.querySelector('nav .nav.active'); if (a && innerWidth <= 700) a.scrollIntoView({ inline: 'center', block: 'nearest' }); }, 50); });
 </script>
 </body></html>

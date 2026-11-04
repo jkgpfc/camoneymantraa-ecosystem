@@ -16,6 +16,8 @@ through small, verified improvements every day. Quality over quantity. One good 
    PFC/REC as listed stocks (e.g. `PFC.NS`) in public market data are fine.
 5. SEBI: education only. No buy/sell calls, targets, tips or return promises. Keep every disclaimer.
 6. Keep it one self-contained HTML file that works offline from file://. No new CDNs. Size ≤ 20 MB.
+   Exception (Jitender, 2026-11-04): installable-app sidecars `manifest.webmanifest`, `sw.js`, `icons/` stay beside it.
+   Keep them; index.html must still work alone from file:// without them. Bump `CACHE` in sw.js only if its file list changes.
 7. Edit surgically (targeted string edits). Never regenerate or rewrite the whole file.
 8. Never deploy to Netlify or any live site. Commit to this repo only. Jitender deploys.
 

@@ -9,3 +9,8 @@
 - Blocked: none.
 - Harness: PASS 65 · FAIL 8 → PASS 73 · FAIL 0.
 - Audit added: #8 (P1 random-walk "live" prices), #9 (P1 mobile header/footer cover ~50% of screen), #10 (P3 hub owner-voice copy).
+
+## 2026-11-04 · installable app (Jitender request)
+- Done: installable app for Android, iPhone/iPad, Windows and Mac (web manifest, offline service worker, icons, "Install app" button, iOS/macOS Safari steps, section shortcuts). #9 done: on ≤700 px the top bar, quick-jump and timeframe rows are one swipeable row each; footer no longer fixed; header 352 → 60 px; safe-area insets; 16 px inputs (no iOS zoom).
+- Checks: Chromium installability errors none; offline reload works from cache; harness PASS 73 · FAIL 0 → PASS 73 · FAIL 0.
+- Deploy note: Netlify must publish manifest.webmanifest, sw.js and icons/ next to index.html.
