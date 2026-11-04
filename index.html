@@ -1951,6 +1951,7 @@ footer { padding-bottom: calc(6px + env(safe-area-inset-bottom)); }
   <section id="btOut"><div class="btwarn">Backtests use adjusted daily prices (Yahoo Finance, snapshot to <b class="asof"></b>; index levels exclude dividends). Past results do not predict future returns. Rule-based statistics only — <b>not investment advice</b>.</div>
   <div id="btRes"><div class="muted" style="padding:20px">Pick an instrument and one or more signals, then press <b>Run backtest</b>. Everything runs in your browser.</div></div></section></main>
 <main id="p_ob" class="pg" style="display:none"><div class="page-hero" data-drill="text:Options Backtester"><div><h1><span>⚡</span><span class="hero-txt">Multi-Leg Index Options Strategy Backtester</span></h1><div class="hero-sub">Test up to 6-leg Nifty, Bank Nifty &amp; Sensex option structures with trailing SL, profit lock, re-entry &amp; payoff curves (Black-Scholes on India VIX)</div></div></div><aside id="obForm">
+  <div class="muted hint">Data as of <b class="asof"></b> (index and India VIX daily closes in the snapshot).</div>
   <div class="modwarn small">⚠ <b>MODELLED premiums</b> (Black-Scholes on India VIX), <b>not real traded option prices</b>; daily close-to-close, no intraday.</div>
   <div class="btsec"><h4>Strategy</h4><div class="rsbar"><select id="obPreset"></select><input id="obName" placeholder="Strategy name" value="Short straddle" style="flex:1"></div>
    <div class="rsbar"><select id="obSaved"></select><button class="small" id="obSave">💾 Save</button><button class="small" id="obDel">🗑</button><button class="small" id="obExport">⇩ Export JSON</button><button class="small" id="obImport">⇧ Import</button><input type="file" id="obFile" accept=".json,application/json" style="display:none"></div><div id="obMsg" class="muted hint"></div></div>
@@ -1983,6 +1984,7 @@ footer { padding-bottom: calc(6px + env(safe-area-inset-bottom)); }
       <span class="conv-pill" id="ipoFilterListed">📈 Newly Listed in Universe</span>
     </div>
   </div>
+  <div class="muted hint">Data as of: newly listed table uses NSE/BSE bhavcopies <b class="dtasof"></b>. The IPO tracker below is a static curated list, not a live feed.</div>
   <div id="ipoKpis" class="rgrid"></div>
   <div id="ipoLiveSec">
     <h3 class="sortable-hd">🟢 Active, Upcoming &amp; Recent Mainboard / SME IPO Tracker <span class="sort-chip">Click any column header to sort · Click any row to X-Ray</span></h3>
@@ -2591,7 +2593,7 @@ function drawChart() { const s = G.byId[CH.id]; if (!s) return; const dRaw = ser
   }
   document.querySelectorAll('#chList .srow').forEach(r => r.classList.toggle('sel', r.dataset.id === CH.id));
   const T = d.t.map(t => chartTime(t)), sc = scoreOf(d), row = G.rows.find(r => r.id === CH.id), n = d.c.length, last = d.c[n - 1], prev = d.c[n - 2];
-  $('#chHead').innerHTML = `<b style="font-size:16px">${esc(s.name)}</b> <span class="muted">${esc(s.id)}</span> · <b id="chLivePrice" style="font-variant-numeric:tabular-nums">₹${nf(last, 2)}</b> <span id="chLivePct">${pct(100 * (last / prev - 1))}</span> · <span id="chLiveStatus" style="color:#10b981;font-weight:700">● LIVE</span> ${d.date(n - 1)} (${CH.tf} bar) · score <b class="${sc.score > 0 ? 'up' : sc.score < 0 ? 'dn' : ''}">${sc.score}/${sc.max} ${sc.label}</b>${row ? ` · <a href="#" id="chRs">company card</a>` : ''} · <a href="#" id="chBt">backtest</a>`;
+  $('#chHead').innerHTML = `<b style="font-size:16px">${esc(s.name)}</b> <span class="muted">${esc(s.id)}</span> · <b id="chLivePrice" style="font-variant-numeric:tabular-nums">₹${nf(last, 2)}</b> <span id="chLivePct">${pct(100 * (last / prev - 1))}</span> · <span id="chLiveStatus" style="color:#64748b;font-weight:700">Snapshot</span> ${d.date(n - 1)} (${CH.tf} bar) · score <b class="${sc.score > 0 ? 'up' : sc.score < 0 ? 'dn' : ''}">${sc.score}/${sc.max} ${sc.label}</b>${row ? ` · <a href="#" id="chRs">company card</a>` : ''} · <a href="#" id="chBt">backtest</a>`;
   if (row) $('#chRs').onclick = e => { e.preventDefault(); location.hash = '#research'; company(row); }; $('#chBt').onclick = e => { e.preventDefault(); btPick(CH.id); location.hash = '#backtest'; };
   const W = $('#chMain'), m = mkChart(W, W.clientHeight || 420); charts.push(m);
   const cs = m.addCandlestickSeries({upColor: '#26a69a', downColor: '#ef5350', wickUpColor: '#26a69a', wickDownColor: '#ef5350', borderVisible: false});
@@ -3559,6 +3561,7 @@ async function ipoInit() {
   if ($('#ipoTrackerTable').innerHTML) return;
   await dtLoad().catch(() => {});
   const L = DT.M ? dtBuild() : [];
+  if (DT.M) $('#p_ipo').querySelectorAll('.dtasof').forEach(e => e.textContent = `${DT.M.dates[0]} to ${DT.M.dates.at(-1)}`);
   const newly = L.filter(x => x.bars > 0 && x.bars < 58).sort((a, b) => (b.tv || 0) - (a.tv || 0));
   $('#ipoNewlyCnt').textContent = newly.length;
 
@@ -3989,7 +3992,7 @@ function applyLiveQuoteToApp(id, price, prevClose, high, low, open, vol) {
     chgPct = basePrev > 0 ? Math.round(10000 * (price / basePrev - 1)) / 100 : (row.chg || 0);
     row.price = price;
     row.chg = chgPct;
-    row.asof = '2026-11-03 LIVE';
+    row.asof = new Date().toLocaleDateString('en-CA', {timeZone: 'Asia/Kolkata'}) + ' quote';
     if (row.hi52 && price > row.hi52) row.hi52 = price;
     if (row.lo52 && price < row.lo52) row.lo52 = price;
   } else if (G.byId[id]) {
@@ -4055,7 +4058,7 @@ function applyLiveQuoteToApp(id, price, prevClose, high, low, open, vol) {
       pEl.classList.add(dirClass);
     }
     if (pctEl) pctEl.innerHTML = pct(chgPct);
-    if (stEl) stEl.textContent = '● LIVE ' + new Date().toLocaleTimeString('en-IN', {hour12: false});
+    if (stEl) { stEl.textContent = '● Quote ' + new Date().toLocaleTimeString('en-IN', {timeZone: 'Asia/Kolkata', hour12: false, hour: '2-digit', minute: '2-digit'}) + ' IST · may be delayed'; stEl.style.color = '#10b981'; }
     const tfCell1D = document.querySelector('#chTfMatrix .tfm-cell[data-tfcell="1D"] .tfm-v');
     if (tfCell1D) {
       tfCell1D.className = 'tfm-v ' + (chgPct >= 0 ? 'up' : 'dn');
