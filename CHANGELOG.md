@@ -14,3 +14,8 @@
 - Done: installable app for Android, iPhone/iPad, Windows and Mac (web manifest, offline service worker, icons, "Install app" button, iOS/macOS Safari steps, section shortcuts). #9 done: on ≤700 px the top bar, quick-jump and timeframe rows are one swipeable row each; footer no longer fixed; header 352 → 60 px; safe-area insets; 16 px inputs (no iOS zoom).
 - Checks: Chromium installability errors none; offline reload works from cache; harness PASS 73 · FAIL 0 → PASS 73 · FAIL 0.
 - Deploy note: Netlify must publish manifest.webmanifest, sw.js and icons/ next to index.html.
+
+## 2026-11-04 · honest prices (#8)
+- Done: #8 removed the random 2-second price walk; prices are now the snapshot or a quote a public source actually returned. Top bar shows "Snapshot <date>" or "Quotes HH:MM IST · <source> · may be delayed"; dot is green only after a real quote. "Live Stream"/"Real-time" labels replaced with "Auto-refresh" and "Not real-time". Sync Now reports success or "No source reachable". Phone: long hero titles wrap.
+- Blocked: #11 snapshot Nifty close differs from TradingView by ~189 pts (needs new snapshot); #12 live data source (needs decision).
+- Harness: PASS 73 · FAIL 0 → PASS 73 · FAIL 0. Offline: Nifty pill unchanged over 10 s. Mocked source: pill and clock update.
