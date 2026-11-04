@@ -1149,7 +1149,7 @@ body.light .nrd, body.light .rmast {
 
 .nwpick { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 8px 0 8px; padding: 12px 16px; background: var(--glass-card); border: 1px solid var(--border-hairline); border-radius: 16px; box-shadow: var(--shadow-card); }
 #nwFind { min-width: 260px; }
-#nwSel { max-width: 420px; }
+#nwSel { max-width: min(420px, 100%); }
 
 /* ===== Day-Trade Finder Funnel ===== */
 .dtwarn { background: var(--ios-red-bg); border: 1px solid var(--ios-red-border); border-radius: 14px; padding: 10px 15px; margin-bottom: 10px; font-size: 12.5px; }
@@ -1411,12 +1411,15 @@ body.light #spotModal { background: rgba(15, 23, 42, 0.35); }
 .spot-row:hover { background: var(--surface-row-sel); }
 
 @media (max-width: 1100px) {
-  #p_rs, #p_ch, #p_bt, #p_ob, .btgrid, .btgrid2, .pcwrap, .dtgrid { grid-template-columns: 1fr; }
+  #p_rs, #p_ch, #p_bt, #p_ob, .btgrid, .btgrid2, .pcwrap, .dtgrid { grid-template-columns: minmax(0, 1fr); }
+  #p_rs > *, #p_ch > *, #p_bt > *, #p_ob > *, .btgrid > *, .btgrid2 > *, .pcwrap > *, .dtgrid > * { min-width: 0; }
   .asofbox { margin-left: 0; }
   .rsum { grid-template-columns: 1fr 1fr; }
 }
 @media (max-width: 700px) {
   .gform { grid-template-columns: 1fr; }
+  #dOut, #obLegs, #obOut .btgrid2 > div { overflow-x: auto; }
+  .tag { overflow-wrap: anywhere; }
 }
 
 /* ===== LIVE PRICE PULSE, DRAWING TOOLBAR, VPVR & IPO RADAR ===== */
