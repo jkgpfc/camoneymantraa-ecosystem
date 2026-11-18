@@ -15,6 +15,19 @@ UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.3
 LIST_URLS = ["https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv",
              "https://archives.nseindia.com/content/equities/EQUITY_L.csv"]
 PREV_LIST = os.path.join(OUT, "symbols.csv")
+ETF_URLS = ["https://nsearchives.nseindia.com/content/equities/eq_etfseclist.csv",
+            "https://archives.nseindia.com/content/equities/eq_etfseclist.csv"]
+PREV_ETF = os.path.join(OUT, "etfs.csv")
+# Indices with exchange-traded futures/options. Yahoo symbol -> bot symbol, display name.
+INDEX_TICKERS = {
+    "^NSEI": ("NIFTY50", "NIFTY 50"),
+    "^NSEBANK": ("BANKNIFTY", "NIFTY BANK"),
+    "NIFTY_FIN_SERVICE.NS": ("FINNIFTY", "NIFTY FINANCIAL SERVICES"),
+    "NIFTY_MID_SELECT.NS": ("MIDCPNIFTY", "NIFTY MIDCAP SELECT"),
+    "^NSMIDCP": ("NIFTYNXT50", "NIFTY NEXT 50"),
+    "^BSESN": ("SENSEX", "BSE SENSEX"),
+    "BSE-BANK.BO": ("BANKEX", "BSE BANKEX"),
+}
 
 
 def get_symbols():
@@ -43,6 +56,33 @@ def get_symbols():
     sys.exit("No symbol list available")
 
 
+def get_etfs():
+    for u in ETF_URLS:
+        try:
+            r = requests.get(u, headers=UA, timeout=30)
+            if r.ok and "symbol" in r.text[:300].lower():
+                rows = list(csv.DictReader(io.StringIO(r.text)))
+                out = []
+                for x in rows:
+                    x = {(k or "").strip().lower(): (v or "").strip() for k, v in x.items()}
+                    sym = x.get("symbol", "")
+                    name = x.get("securityname") or x.get("security name") or x.get("underlying") or ""
+                    if sym:
+                        out.append((sym.upper(), name, "ETF"))
+                if len(out) > 20:
+                    with open(PREV_ETF, "w", newline="") as f:
+                        csv.writer(f).writerows([("SYMBOL", "NAME", "SERIES")] + out)
+                    print(f"NSE ETF list: {len(out)} ETFs")
+                    return out
+        except Exception as e:
+            print("ETF list fetch failed:", e)
+    if os.path.exists(PREV_ETF):
+        with open(PREV_ETF) as f:
+            return [tuple(r) for r in list(csv.reader(f))[1:]]
+    print("No ETF list; continuing without ETFs")
+    return []
+
+
 def frames(df, tickers):
     if df is None or df.empty:
         return
@@ -57,8 +97,12 @@ def frames(df, tickers):
 
 def main():
     syms = get_symbols()
+    have = {s for s, _, _ in syms}
+    syms += [e for e in get_etfs() if e[0] not in have]
     meta = {s: (n, sr) for s, n, sr in syms}
-    tick = {"^NSEI": "NIFTY50", **{f"{s}.NS": s for s, _, _ in syms}}
+    for y, (s, n) in INDEX_TICKERS.items():
+        meta[s] = (n, "IDX")
+    tick = {**{y: s for y, (s, n) in INDEX_TICKERS.items()}, **{f"{s}.NS": s for s, _, _ in syms}}
     names = list(tick)
     data = {}
     for i in range(0, len(names), 100):
@@ -85,7 +129,7 @@ def main():
     didx = {d: k for k, d in enumerate(dates)}
     out = {"v": 1, "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"), "dates": dates, "s": []}
     for sym, f in data.items():
-        n, sr = meta.get(sym, ("NIFTY 50", "IDX") if sym == "NIFTY50" else ("", "EQ"))
+        n, sr = meta.get(sym, ("", "EQ"))
         di = [didx[d.strftime("%Y-%m-%d")] for d in f.index]
         r = lambda col: [round(float(x), 2) for x in f[col]]
         vol = [int(x) if pd.notna(x) else 0 for x in f["Volume"]]
@@ -93,7 +137,9 @@ def main():
     raw = json.dumps(out, separators=(",", ":")).encode()
     with gzip.open(os.path.join(OUT, "prices.json.gz"), "wb", compresslevel=9) as g:
         g.write(raw)
-    info = {"generated": out["generated"], "lastSession": dates[-1], "symbols": len(out["s"]), "bytes": os.path.getsize(os.path.join(OUT, "prices.json.gz"))}
+    idx_ok = sorted(s for s in data if meta.get(s, ("", ""))[1] == "IDX")
+    etf_n = sum(1 for s in data if meta.get(s, ("", ""))[1] == "ETF")
+    info = {"generated": out["generated"], "lastSession": dates[-1], "symbols": len(out["s"]), "indices": idx_ok, "etfs": etf_n, "bytes": os.path.getsize(os.path.join(OUT, "prices.json.gz"))}
     with open(os.path.join(OUT, "info.json"), "w") as f:
         json.dump(info, f)
     print(info)

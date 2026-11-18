@@ -687,28 +687,34 @@ const TB = (function () {
     v.forEach((r, i) => { r.rs = Math.max(1, Math.min(99, Math.round(1 + 98 * i / Math.max(1, v.length - 1)))); if (r.tt) r.tt[7] = r.rs >= 70; });
   }
 
+  const isIndexBar = (sym, b) => b.series === 'IDX' || /^IDX:|^\^/.test(sym);
   function run(barsMap, fundMap, opt, indexSym) {
-    const results = []; let index = null;
+    const stocks = []; const indices = []; let index = null;
     const totVol = new Map();
     index = barsMap.get(indexSym) || barsMap.get('NIFTY50') || barsMap.get('IDX:NIFTY 50') || barsMap.get('^NSEI') || null;
     for (const [sym, b] of barsMap) {
-      if (b === index || /^IDX:|^\^|^NIFTY/.test(sym)) continue;
-      for (let i = Math.max(0, b.d.length - 30); i < b.d.length; i++) totVol.set(b.d[i], (totVol.get(b.d[i]) || 0) + b.v[i]);
-      try { results.push(analyze(b, opt)); } catch (e) { results.push({ sym, insufficient: true, err: String(e) }); }
+      const isIdx = b === index || isIndexBar(sym, b);
+      if (!isIdx) for (let i = Math.max(0, b.d.length - 30); i < b.d.length; i++) totVol.set(b.d[i], (totVol.get(b.d[i]) || 0) + b.v[i]);
+      let R; try { R = analyze(b, opt); } catch (e) { R = { sym, insufficient: true, err: String(e) }; }
+      if (isIdx) { R.isIndex = true; indices.push(R); } else stocks.push(R);
     }
-    rankRS(results);
+    rankRS(stocks);
+    // indices: RS percentile against the stock universe
+    const raw = stocks.filter(r => isFinite(r.rsRaw)).map(r => r.rsRaw).sort((a, b) => a - b);
+    for (const r of indices) if (isFinite(r.rsRaw) && raw.length) { let k = 0; while (k < raw.length && raw[k] <= r.rsRaw) k++; r.rs = Math.max(1, Math.min(99, Math.round(1 + 98 * k / raw.length))); if (r.tt) r.tt[7] = r.rs >= 70; }
     // industry RS (rule 47 compare sectors)
     if (fundMap) {
       const ind = new Map();
-      for (const r of results) { const f = fundMap.get(r.sym); if (f && f.industry && isFinite(r.rs)) { if (!ind.has(f.industry)) ind.set(f.industry, []); ind.get(f.industry).push(r.rs); } }
+      for (const r of stocks) { const f = fundMap.get(r.sym); if (f && f.industry && isFinite(r.rs)) { if (!ind.has(f.industry)) ind.set(f.industry, []); ind.get(f.industry).push(r.rs); } }
       const indRS = new Map([...ind].map(([k, a]) => [k, median(a)]));
-      for (const r of results) { const f = fundMap.get(r.sym); if (f && f.industry) r.indRS = indRS.get(f.industry); }
-      results.indRS = indRS;
+      for (const r of stocks) { const f = fundMap.get(r.sym); if (f && f.industry) r.indRS = indRS.get(f.industry); }
+      stocks.indRS = indRS;
     }
-    const tone = marketTone(results, index, { totVol });
-    const lists = scan(results, fundMap, tone, opt);
+    const tone = marketTone(stocks, index, { totVol });
+    const lists = scan(stocks, fundMap, tone, opt);
     const final = finalizePlans(lists, barsMap, opt);
-    return { results, tone, lists: final, index };
+    const results = stocks.concat(indices); results.indRS = stocks.indRS;
+    return { results, indices: indices.filter(r => !r.insufficient), tone, lists: final, index };
   }
 
   return { run, analyze, smaSeries, atrSeries, mapFundamentalHeaders, longTermScore, pnfColumns, niceBox, findRange, marketTone };
@@ -1658,9 +1664,9 @@ function refreshHeader() {
 }
 
 /* ======================= VIEWS ======================= */
-const TABS = [['data', 'Data'], ['tone', 'Market tone'], ['intraday', 'Intraday'], ['btst', 'BTST'], ['swing', 'Swing'], ['short', 'Short term'], ['medium', 'Medium term'], ['long', 'Long term'], ['avoid', 'Avoid / Exit'], ['hold', 'My holdings'], ['search', 'Stock lookup'], ['rules', 'Rules'], ['journal', 'Journal'], ['settings', 'Settings']];
+const TABS = [['data', 'Data'], ['tone', 'Market tone'], ['indices', 'Indices'], ['intraday', 'Intraday'], ['btst', 'BTST'], ['swing', 'Swing'], ['short', 'Short term'], ['medium', 'Medium term'], ['long', 'Long term'], ['avoid', 'Avoid / Exit'], ['hold', 'My holdings'], ['search', 'Stock lookup'], ['rules', 'Rules'], ['journal', 'Journal'], ['settings', 'Settings']];
 function renderNav() {
-  $('#nav').innerHTML = TABS.map(([k, l]) => { const n = S.out && S.out.lists[k] ? `<span class="n">${S.out.lists[k].length}</span>` : ''; return `<a data-t="${k}" class="${S.tab === k ? 'on' : ''}">${l}${n}</a>`; }).join('');
+  $('#nav').innerHTML = TABS.map(([k, l]) => { const cnt = !S.out ? null : k === 'indices' ? (S.out.indices || []).length : S.out.lists[k] ? S.out.lists[k].length : null; const n = cnt != null ? `<span class="n">${cnt}</span>` : ''; return `<a data-t="${k}" class="${S.tab === k ? 'on' : ''}">${l}${n}</a>`; }).join('');
   $('#nav').querySelectorAll('a').forEach(a => a.onclick = () => { S.tab = a.dataset.t; render(); });
 }
 function render() { renderNav(); const v = VIEWS[S.tab] || VIEWS.data; $('#main').innerHTML = v(); (POST[S.tab] || (() => { }))(); }
@@ -1787,6 +1793,22 @@ const VIEWS = {
       <li><b>Confirmed uptrend:</b> normal size on all horizons.</li><li><b>Uptrend under pressure:</b> tighten stops; new buys only on A+ setups.</li>
       <li><b>Choppy:</b> half size; prefer swing over breakouts; intraday both sides.</li><li><b>Correction:</b> no new long positions; protect gains (W69); intraday shorts only.</li></ul></div>
     ${S.out.results.indRS ? `<div class="card"><h3>Industry strength (W47 compare sectors)</h3>${indTable()}</div>` : ''}`;
+  },
+  indices: () => {
+    if (!S.out) return needScan();
+    const I = (S.out.indices || []).slice().sort((x, y) => (y.rs || 0) - (x.rs || 0));
+    let h = `<div class="row" style="margin-bottom:8px"><h2 style="margin:0;font-size:16px;flex:3">Tradeable indices</h2><span class="mut small" style="flex:2;text-align:right">Scan ${S.out.at}</span></div>
+      <div class="note">Indices with exchange-traded futures and options (NSE: NIFTY 50, BANK NIFTY, FIN NIFTY, MIDCAP SELECT, NIFTY NEXT 50; BSE: SENSEX, BANKEX). Index volume is not traded volume, so only the price rules apply here (trend, stage, Wyckoff structure without volume, RSI). To trade an index in the cash market, use its ETF; ETFs are scanned with the stocks in every horizon tab.</div>`;
+    if (!I.length) return h + `<div class="card mut">No index data yet. Tap <b>Sync</b>; index data arrives with the next GitHub data build.</div>`;
+    h += `<div class="tw"><table><thead><tr><th>Index</th><th>Trend action</th><th class=num>Close</th><th class=num>Chg</th><th class=num>Stage</th><th class=num>Template</th><th class=num>RS</th><th class=num>RSI</th><th class=num>From 52-wk high</th><th>Wyckoff phase</th><th class=num>Trail stop</th></tr></thead><tbody>`;
+    for (const R of I) {
+      const a = holdAction(R); const tt = R.tt ? R.tt.filter(Boolean).length + '/8' : '–';
+      const st = { 1: 'BASING (Stage 1)', 2: 'UPTREND (Stage 2)', 3: 'TOPPING (Stage 3)', 4: 'DOWNTREND (Stage 4)' }[R.stage] || 'TREND UNCLEAR';
+      const lab = a.act === 'EXIT' ? 'AVOID LONGS · ' + st : a.act === 'TIGHTEN STOP' ? st + ' · caution' : st;
+      const lc = a.act === 'EXIT' || R.stage === 4 ? 'dn' : R.stage === 2 && a.act === 'HOLD' ? 'up' : 'wr';
+      h += `<tr class="click" data-sym="${esc(R.sym)}"><td><b>${esc(R.sym)}</b><div class="mut small">${esc(R.name || '')}</div></td><td class="${lc}" style="white-space:normal;min-width:170px"><b>${lab}</b><div class="small">${(a.act === 'HOLD' ? (R.stage === 2 ? a.why : ['No warning signals']) : a.why).map(esc).join(' · ')}</div></td><td class=num>${fmt(R.close)}</td><td class="num ${cls(R.chg)}">${pct(R.chg)}</td><td class=num>${R.stage ?? '–'}</td><td class=num>${tt}</td><td class=num>${R.rs ?? '–'}</td><td class=num>${fmt(R.rsi, 0)}</td><td class="num ${cls(R.fromHigh)}">${pct(R.fromHigh)}</td><td>${esc(R.range ? R.range.phase : 'Trending')}</td><td class=num>${a.trail == null ? '–' : fmt(a.trail)}</td></tr>`;
+    }
+    return h + '</tbody></table></div><p class="mut small">Tap an index for its chart and full rule read-out.</p>';
   },
   intraday: () => listView('intraday'), btst: () => listView('btst'), swing: () => listView('swing'), short: () => listView('short'), medium: () => listView('medium'), long: () => listView('long'), avoid: () => listView('avoid'),
   hold: () => `<div class="card"><h3>My holdings — exit check (W34, W42, W69, W97)</h3>
