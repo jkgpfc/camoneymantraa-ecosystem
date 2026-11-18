@@ -1,0 +1,49 @@
+name: Tape Reader Bot data
+
+on:
+  schedule:
+    - cron: "17 13 * * 1-5"   # 18:47 IST, Mon-Fri (after NSE close data settles)
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/tapebot-data.yml"
+      - "tapebot/fetch/**"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tapebot-data
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get previous data branch (for the saved symbol list)
+        run: |
+          git fetch --depth 1 origin data:data || true
+          mkdir -p out
+          if git rev-parse --verify data >/dev/null 2>&1; then git show data:tapebot/symbols.csv > out/symbols.csv 2>/dev/null || true; fi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet yfinance pandas requests
+      - name: Build data
+        run: python tapebot/fetch/build_data.py out
+      - name: Publish to data branch (single commit, no history growth)
+        run: |
+          cd out
+          mkdir -p ../publish/tapebot && cp prices.json.gz info.json symbols.csv ../publish/tapebot/ 2>/dev/null || cp prices.json.gz info.json ../publish/tapebot/
+          cd ../publish
+          git init -q -b data
+          git config user.name "tapebot-data"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Tape Reader Bot data $(date -u +%F)"
+          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" data
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
