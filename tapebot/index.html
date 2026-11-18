@@ -1061,6 +1061,7 @@ function lastNWeekdays(toIncl, n) { const out = []; let d = toIncl; while (out.l
 function getProxyEntries() {
   const list = [];
   const cp = (S.autoCfg.customProxy || '').trim();
+  if (/\.netlify\.app$/.test(location.hostname)) list.push({ name: 'Site relay', build: u => '/api/relay?url=' + encodeURIComponent(u) });   // built-in relay when hosted on Netlify
   if (cp) list.push({ name: 'Your relay', build: u => cp.includes('{url}') ? cp.replace('{url}', encodeURIComponent(u)) : cp + encodeURIComponent(u) });
   list.push(
     { name: 'corsproxy.io', build: u => 'https://corsproxy.io/?url=' + encodeURIComponent(u) },
@@ -1337,6 +1338,40 @@ async function syncFromYahoo(list, uni, forceFull) {
   return { ok: okCnt, fail: failCnt, aborted: abort };
 }
 
+
+/* ---- GitHub cloud data: built nightly by a GitHub Action, served by raw.githubusercontent.com (CORS-enabled, no relay needed) ---- */
+const CLOUD_DEFAULT = 'https://raw.githubusercontent.com/jkgpfc/camoneymantraa-ecosystem/data/tapebot/';
+async function syncFromCloud(force) {
+  const base = (S.autoCfg.cloudUrl || CLOUD_DEFAULT).replace(/\/?$/, '/');
+  setProg(0, 0, 'Checking GitHub data…');
+  const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), 20000);
+  let info;
+  try { const r = await fetch(base + 'info.json?t=' + Date.now(), { cache: 'no-store', signal: ctl.signal }); if (!r.ok) throw new Error('HTTP ' + r.status); info = await r.json(); }
+  finally { clearTimeout(tm); }
+  if (!info || !info.lastSession) throw new Error('no data published yet');
+  if (!force && S.cloudGen === info.generated && medianBars() >= 200) { S.lastSession = info.lastSession; addLog(`GitHub data is current (${info.lastSession}, ${info.symbols.toLocaleString()} stocks).`); return { ok: true, same: true, info }; }
+  addLog(`Downloading GitHub data: ${info.symbols.toLocaleString()} stocks up to ${info.lastSession} (${(info.bytes / 1e6).toFixed(1)} MB)…`);
+  setProg(1, 4, `Downloading ${(info.bytes / 1e6).toFixed(1)} MB from GitHub…`);
+  const r = await fetch(base + 'prices.json.gz?t=' + encodeURIComponent(info.generated), { cache: 'no-store' });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const buf = new Uint8Array(await r.arrayBuffer());
+  setProg(2, 4, 'Unpacking…');
+  const txt = (buf[0] === 0x1f && buf[1] === 0x8b) ? await new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip'))).text() : new TextDecoder().decode(buf);
+  const j = JSON.parse(txt);
+  const dates = j.dates; const fresh = new Map();
+  for (const s of j.s) {
+    const old = S.bars.get(s.y);
+    fresh.set(s.y, { sym: s.y, name: s.n || (old && old.name) || '', series: s.r || 'EQ', d: s.i.map(k => dates[k]), o: s.o, h: s.h, l: s.l, c: s.c, v: s.v, dq: new Array(s.i.length).fill(NaN) });
+  }
+  setProg(3, 4, 'Saving on this device…');
+  for (const [k, b] of S.bars) if (!fresh.has(k) && /^IDX:/.test(k)) fresh.set(k, b);   // keep manually loaded index files
+  S.bars = fresh;
+  await DB.clearBars(); await DB.putBars([...fresh.keys()]);
+  S.cloudGen = info.generated; S.lastSession = info.lastSession; DB.set('cloudGen', info.generated);
+  addLog(`✓ Loaded ${fresh.size.toLocaleString()} stocks from GitHub (up to ${info.lastSession}).`);
+  return { ok: true, info };
+}
+
 /* ---- Orchestrator ---- */
 async function autoSyncEOD(forceFull = false) {
   if (S.syncing) return;
@@ -1345,6 +1380,14 @@ async function autoSyncEOD(forceFull = false) {
   if (S.tab === 'data') render();
   let got = 0;
   try {
+    if (S.autoCfg.useCloud !== false) {
+      try {
+        const c = await syncFromCloud(forceFull);
+        const msg = `✓ Data ready · ${S.bars.size.toLocaleString()} stocks · last session ${c.info.lastSession} (GitHub, updated every weekday evening)`;
+        setProg(0, 0, msg); addLog(msg); showToast(c.same ? 'Already up to date' : 'Data loaded from GitHub', 'ok');
+        return;
+      } catch (e) { addLog(`GitHub data not available (${(e.message || e).toString().slice(0, 80)}). Trying relays…`); }
+    }
     const sess = await getLatestSession();
     S.lastSession = sess.date;
     addLog(`Latest completed session: ${sess.date} (${sess.yahoo ? 'from NIFTY 50' : 'calendar estimate — Yahoo not reachable'})`);
@@ -1387,8 +1430,8 @@ async function autoSyncEOD(forceFull = false) {
     addLog('✗ Sync stopped: ' + (e.message || e)); setProg(0, 0, 'Sync stopped — see log'); showToast('Sync stopped — see log', 'err');
   } finally {
     S.syncing = false; updateSyncUI();
+    if (S.bars.size) await runScan(); else render();
   }
-  if (S.bars.size) await runScan(); else render();
 }
 
 /* ======================= SAVE / RESTORE DATA & APP ON IPHONE ======================= */
@@ -1678,7 +1721,7 @@ const VIEWS = {
       + (S.noStore ? `<div class="note red"><b>Storage is blocked</b> (private browsing or file preview). The app works, but data is lost when you close it. Use <b>Save Fetched Data</b> before closing.</div>` : '');
     return banners + `<div class="grid">
     <div class="card"><h3>1 · Auto-Fetch All Listed NSE Stocks</h3>
-      <p class="small mut">First run: 2 years of daily bars per stock from Yahoo (split-adjusted). After that, each day's update is a single NSE bhavcopy file for all stocks, including delivery %. Progress is saved as it goes; pause and resume any time.</p>
+      <p class="small mut">Data for all NSE stocks is built every weekday at about 6:45 pm IST on your GitHub and loads here in one download — no relay needed. If that file is not available, the app falls back to Yahoo / NSE through relays.</p>
       <label>NSE Universe</label>
       <select onchange="saveAutoCfg({universe:this.value})">
         <option value="all_nse" ${cfg.universe === 'all_nse' ? 'selected' : ''}>All Listed NSE Equities (~2,100+ stocks via EQUITY_L.csv)</option>
@@ -1921,10 +1964,10 @@ $('#btnRun').onclick = runScan;
 $('#btnSync').onclick = () => S.syncing ? stopAutoSync() : autoSyncEOD(false);
 (async () => {
   try {
-    const [bars, fund, fi, opt, jr, hd, ac, ns, na, dsy] = await Promise.all([
+    const [bars, fund, fi, opt, jr, hd, ac, ns, na, dsy, cg] = await Promise.all([
       DB.allBars(), DB.get('fund'), DB.get('fundInfo'), DB.get('opt'),
       DB.get('journal'), DB.get('holdings'), DB.get('autoCfg'),
-      DB.get('nseAllSyms'), DB.get('nseAllAt'), DB.get('deadSyms')
+      DB.get('nseAllSyms'), DB.get('nseAllAt'), DB.get('deadSyms'), DB.get('cloudGen')
     ]);
     (bars || []).forEach(b => { if (!b.dq) b.dq = new Array(b.d.length).fill(NaN); S.bars.set(b.sym, b); });
     if (fund) S.fund = new Map(fund); if (fi) S.fundInfo = fi; if (opt) Object.assign(S.opt, opt);
@@ -1933,13 +1976,14 @@ $('#btnSync').onclick = () => S.syncing ? stopAutoSync() : autoSyncEOD(false);
     if (Array.isArray(ns)) S.nseAllSyms = ns;
     if (na) S.nseAllAt = na;
     if (dsy) S.deadSyms = dsy;
+    if (cg) S.cloudGen = cg;
   } catch (e) { console.warn('Storage unavailable', e); }
   refreshHeader(); render();
   if (S.bars.size) await runScan();
   if (S.autoCfg.autoFetchOnOpen) {
     let maxD = '';
     for (const b of S.bars.values()) if (b.d.length && b.d[b.d.length - 1] > maxD) maxD = b.d[b.d.length - 1];
-    if (!S.bars.size || maxD < expectedLastSessionDate()) autoSyncEOD(!S.bars.size);
+    if (!S.bars.size || maxD < fallbackSessionDate()) autoSyncEOD(false);
   }
 })();
 </script>
