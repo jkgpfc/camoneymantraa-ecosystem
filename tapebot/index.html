@@ -687,7 +687,7 @@ const TB = (function () {
     v.forEach((r, i) => { r.rs = Math.max(1, Math.min(99, Math.round(1 + 98 * i / Math.max(1, v.length - 1)))); if (r.tt) r.tt[7] = r.rs >= 70; });
   }
 
-  const isIndexBar = (sym, b) => b.series === 'IDX' || /^IDX:|^\^/.test(sym);
+  const isIndexBar = (sym, b) => /^(IDX|MCX|GLB)$/.test(b.series || '') || /^IDX:|^\^|^MCX:|^GL:/.test(sym);   // indices + commodities: not scanned as stocks
   function run(barsMap, fundMap, opt, indexSym) {
     const stocks = []; const indices = []; let index = null;
     const totVol = new Map();
@@ -1355,6 +1355,7 @@ async function syncFromCloud(force) {
   try { const r = await fetch(base + 'info.json?t=' + Date.now(), { cache: 'no-store', signal: ctl.signal }); if (!r.ok) throw new Error('HTTP ' + r.status); info = await r.json(); }
   finally { clearTimeout(tm); }
   if (!info || !info.lastSession) throw new Error('no data published yet');
+  S.cloudInfo = info;
   if (!force && S.cloudGen === info.generated && medianBars() >= 200) { S.lastSession = info.lastSession; addLog(`GitHub data is current (${info.lastSession}, ${info.symbols.toLocaleString()} stocks).`); return { ok: true, same: true, info }; }
   addLog(`Downloading GitHub data: ${info.symbols.toLocaleString()} stocks up to ${info.lastSession} (${(info.bytes / 1e6).toFixed(1)} MB)…`);
   setProg(1, 4, `Downloading ${(info.bytes / 1e6).toFixed(1)} MB from GitHub…`);
@@ -1373,7 +1374,7 @@ async function syncFromCloud(force) {
   for (const [k, b] of S.bars) if (!fresh.has(k) && /^IDX:/.test(k)) fresh.set(k, b);   // keep manually loaded index files
   S.bars = fresh;
   await DB.clearBars(); await DB.putBars([...fresh.keys()]);
-  S.cloudGen = info.generated; S.lastSession = info.lastSession; DB.set('cloudGen', info.generated);
+  S.cloudGen = info.generated; S.cloudInfo = info; S.lastSession = info.lastSession; DB.set('cloudGen', info.generated); DB.set('cloudInfo', info);
   addLog(`✓ Loaded ${fresh.size.toLocaleString()} stocks from GitHub (up to ${info.lastSession}).`);
   return { ok: true, info };
 }
@@ -1664,9 +1665,9 @@ function refreshHeader() {
 }
 
 /* ======================= VIEWS ======================= */
-const TABS = [['data', 'Data'], ['tone', 'Market tone'], ['indices', 'Indices'], ['intraday', 'Intraday'], ['btst', 'BTST'], ['swing', 'Swing'], ['short', 'Short term'], ['medium', 'Medium term'], ['long', 'Long term'], ['avoid', 'Avoid / Exit'], ['hold', 'My holdings'], ['search', 'Stock lookup'], ['rules', 'Rules'], ['journal', 'Journal'], ['settings', 'Settings']];
+const TABS = [['data', 'Data'], ['tone', 'Market tone'], ['indices', 'Indices'], ['commodities', 'Commodities'], ['intraday', 'Intraday'], ['btst', 'BTST'], ['swing', 'Swing'], ['short', 'Short term'], ['medium', 'Medium term'], ['long', 'Long term'], ['avoid', 'Avoid / Exit'], ['hold', 'My holdings'], ['search', 'Stock lookup'], ['rules', 'Rules'], ['journal', 'Journal'], ['settings', 'Settings']];
 function renderNav() {
-  $('#nav').innerHTML = TABS.map(([k, l]) => { const cnt = !S.out ? null : k === 'indices' ? (S.out.indices || []).length : S.out.lists[k] ? S.out.lists[k].length : null; const n = cnt != null ? `<span class="n">${cnt}</span>` : ''; return `<a data-t="${k}" class="${S.tab === k ? 'on' : ''}">${l}${n}</a>`; }).join('');
+  $('#nav').innerHTML = TABS.map(([k, l]) => { const cnt = !S.out ? null : k === 'indices' ? (S.out.indices || []).filter(r => !/^(MCX|GLB)$/.test(r.series)).length : k === 'commodities' ? (S.out.indices || []).filter(r => /^(MCX|GLB)$/.test(r.series)).length : S.out.lists[k] ? S.out.lists[k].length : null; const n = cnt != null ? `<span class="n">${cnt}</span>` : ''; return `<a data-t="${k}" class="${S.tab === k ? 'on' : ''}">${l}${n}</a>`; }).join('');
   $('#nav').querySelectorAll('a').forEach(a => a.onclick = () => { S.tab = a.dataset.t; render(); });
 }
 function render() { renderNav(); const v = VIEWS[S.tab] || VIEWS.data; $('#main').innerHTML = v(); (POST[S.tab] || (() => { }))(); }
@@ -1794,22 +1795,27 @@ const VIEWS = {
       <li><b>Choppy:</b> half size; prefer swing over breakouts; intraday both sides.</li><li><b>Correction:</b> no new long positions; protect gains (W69); intraday shorts only.</li></ul></div>
     ${S.out.results.indRS ? `<div class="card"><h3>Industry strength (W47 compare sectors)</h3>${indTable()}</div>` : ''}`;
   },
-  indices: () => {
+  indices: () => instrumentView('IDX'),
+  commodities: () => instrumentView('CMD'),
+};
+function instrumentView(kind) {
     if (!S.out) return needScan();
-    const I = (S.out.indices || []).slice().sort((x, y) => (y.rs || 0) - (x.rs || 0));
-    let h = `<div class="row" style="margin-bottom:8px"><h2 style="margin:0;font-size:16px;flex:3">Tradeable indices</h2><span class="mut small" style="flex:2;text-align:right">Scan ${S.out.at}</span></div>
-      <div class="note">Indices with exchange-traded futures and options (NSE: NIFTY 50, BANK NIFTY, FIN NIFTY, MIDCAP SELECT, NIFTY NEXT 50; BSE: SENSEX, BANKEX). Index volume is not traded volume, so only the price rules apply here (trend, stage, Wyckoff structure without volume, RSI). To trade an index in the cash market, use its ETF; ETFs are scanned with the stocks in every horizon tab.</div>`;
-    if (!I.length) return h + `<div class="card mut">No index data yet. Tap <b>Sync</b>; index data arrives with the next GitHub data build.</div>`;
-    h += `<div class="tw"><table><thead><tr><th>Index</th><th>Trend action</th><th class=num>Close</th><th class=num>Chg</th><th class=num>Stage</th><th class=num>Template</th><th class=num>RS</th><th class=num>RSI</th><th class=num>From 52-wk high</th><th>Wyckoff phase</th><th class=num>Trail stop</th></tr></thead><tbody>`;
+    const isC = kind === 'CMD';
+    const I = (S.out.indices || []).filter(r => isC ? /^(MCX|GLB)$/.test(r.series) : !/^(MCX|GLB)$/.test(r.series)).sort((x, y) => (x.series === 'MCX' ? 0 : 1) - (y.series === 'MCX' ? 0 : 1) || (y.rs || 0) - (x.rs || 0));
+    let h = `<div class="row" style="margin-bottom:8px"><h2 style="margin:0;font-size:16px;flex:3">${isC ? 'MCX commodities & global benchmarks' : 'Tradeable indices'}</h2><span class="mut small" style="flex:2;text-align:right">Scan ${S.out.at}</span></div>
+      ${isC ? `<div class="note">MCX futures (₹) are continuous front-month series, adjusted at each contract rollover so there is no false gap. Global rows (USD) are COMEX/NYMEX/ICE benchmarks from Yahoo, shown for context, not MCX prices. ${S.cloudInfo && S.cloudInfo.mcx && S.cloudInfo.mcx.status && S.cloudInfo.mcx.status !== 'ok' && !S.cloudInfo.mcx.series ? '<b>MCX data could not be downloaded in the last build (' + esc(S.cloudInfo.mcx.status) + '); only global benchmarks are shown.</b>' : ''} Futures carry leverage and lot sizes; no entry levels are generated here.</div>` : `<div class="note">Indices with exchange-traded futures and options (NSE: NIFTY 50, BANK NIFTY, FIN NIFTY, MIDCAP SELECT, NIFTY NEXT 50; BSE: SENSEX, BANKEX). Index volume is not traded volume, so only the price rules apply here (trend, stage, Wyckoff structure without volume, RSI). To trade an index in the cash market, use its ETF; ETFs are scanned with the stocks in every horizon tab.</div>`}`;
+    if (!I.length) return h + `<div class="card mut">No ${isC ? 'commodity' : 'index'} data yet. Tap <b>Sync</b>; index data arrives with the next GitHub data build.</div>`;
+    h += `<div class="tw"><table><thead><tr><th>${isC ? 'Contract' : 'Index'}</th><th>Trend action</th><th class=num>Close</th><th class=num>Chg</th><th class=num>Stage</th><th class=num>Template</th><th class=num>RS</th><th class=num>RSI</th><th class=num>From 52-wk high</th><th>Wyckoff phase</th><th class=num>Trail stop</th></tr></thead><tbody>`;
     for (const R of I) {
       const a = holdAction(R); const tt = R.tt ? R.tt.filter(Boolean).length + '/8' : '–';
       const st = { 1: 'BASING (Stage 1)', 2: 'UPTREND (Stage 2)', 3: 'TOPPING (Stage 3)', 4: 'DOWNTREND (Stage 4)' }[R.stage] || 'TREND UNCLEAR';
       const lab = a.act === 'EXIT' ? 'AVOID LONGS · ' + st : a.act === 'TIGHTEN STOP' ? st + ' · caution' : st;
       const lc = a.act === 'EXIT' || R.stage === 4 ? 'dn' : R.stage === 2 && a.act === 'HOLD' ? 'up' : 'wr';
-      h += `<tr class="click" data-sym="${esc(R.sym)}"><td><b>${esc(R.sym)}</b><div class="mut small">${esc(R.name || '')}</div></td><td class="${lc}" style="white-space:normal;min-width:170px"><b>${lab}</b><div class="small">${(a.act === 'HOLD' ? (R.stage === 2 ? a.why : ['No warning signals']) : a.why).map(esc).join(' · ')}</div></td><td class=num>${fmt(R.close)}</td><td class="num ${cls(R.chg)}">${pct(R.chg)}</td><td class=num>${R.stage ?? '–'}</td><td class=num>${tt}</td><td class=num>${R.rs ?? '–'}</td><td class=num>${fmt(R.rsi, 0)}</td><td class="num ${cls(R.fromHigh)}">${pct(R.fromHigh)}</td><td>${esc(R.range ? R.range.phase : 'Trending')}</td><td class=num>${a.trail == null ? '–' : fmt(a.trail)}</td></tr>`;
+      h += `<tr class="click" data-sym="${esc(R.sym)}"><td><b>${esc(R.sym.replace(/^(MCX|GL):/, ''))}</b> ${R.series === 'MCX' ? '<span class=chip>MCX ₹</span>' : R.series === 'GLB' ? '<span class=chip>Global</span>' : ''}<div class="mut small">${esc(R.name || '')}</div></td><td class="${lc}" style="white-space:normal;min-width:170px"><b>${lab}</b><div class="small">${(a.act === 'HOLD' ? (R.stage === 2 ? a.why : ['No warning signals']) : a.why).map(esc).join(' · ')}</div></td><td class=num>${fmt(R.close)}</td><td class="num ${cls(R.chg)}">${pct(R.chg)}</td><td class=num>${R.stage ?? '–'}</td><td class=num>${tt}</td><td class=num>${R.rs ?? '–'}</td><td class=num>${fmt(R.rsi, 0)}</td><td class="num ${cls(R.fromHigh)}">${pct(R.fromHigh)}</td><td>${esc(R.range ? R.range.phase : 'Trending')}</td><td class=num>${a.trail == null ? '–' : fmt(a.trail)}</td></tr>`;
     }
-    return h + '</tbody></table></div><p class="mut small">Tap an index for its chart and full rule read-out.</p>';
-  },
+    return h + `</tbody></table></div><p class="mut small">Tap a row for its chart and full rule read-out.</p>`;
+}
+const VIEWS_MORE = {
   intraday: () => listView('intraday'), btst: () => listView('btst'), swing: () => listView('swing'), short: () => listView('short'), medium: () => listView('medium'), long: () => listView('long'), avoid: () => listView('avoid'),
   hold: () => `<div class="card"><h3>My holdings — exit check (W34, W42, W69, W97)</h3>
     <p class="small mut">Enter symbols, optionally with buy price: <code>PFC 410, RECLTD, TCS 3500</code></p>
@@ -1828,6 +1834,7 @@ const VIEWS = {
       <div><label>Series to load</label><input type="text" data-o="series" value="${esc(o.series)}"></div><div><label>Index symbol for tone</label><input type="text" data-o="indexSym" value="${esc(o.indexSym)}"></div></div>
       <div style="margin-top:10px"><button class="pri" onclick="saveOpt()">Save & re-scan</button></div></div>`; }
 };
+Object.assign(VIEWS, VIEWS_MORE);
 const POST = {
   data: () => { const fp = $('#fPrice'), ff = $('#fFund'), fs = $('#fSnap'); if (fp) fp.onchange = e => loadPriceFiles([...e.target.files]); if (ff) ff.onchange = e => e.target.files[0] && loadFundFile(e.target.files[0]); if (fs) fs.onchange = e => e.target.files[0] && loadDataSnapshot(e.target.files[0]); },
   rules: () => { const f = () => { const s = $('#rsrc').value, m = $('#rmode').value; $('#rbody').innerHTML = RULES.list.filter(r => (!s || r.src === s) && (!m || r.mode === m)).map(r => `<tr><td>${r.id}</td><td>${esc(r.src)}</td><td style="white-space:normal">${esc(r.rule)}</td><td><b>${r.mode}</b></td></tr>`).join(''); }; $('#rsrc').onchange = f; $('#rmode').onchange = f; f(); },
