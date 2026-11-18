@@ -122,6 +122,27 @@ def main():
             data[tick[t]] = f
         print(f"{min(i + 100, len(names))}/{len(names)} requested, {len(data)} with data", flush=True)
         time.sleep(1.5)
+    # indices Yahoo does not carry under the first code: try alternates one by one
+    ALT = {"MIDCPNIFTY": ["NIFTY_MIDCAP_SELECT.NS", "^NIFTYMIDSELECT", "NIFTYMIDSELECT.NS"],
+           "BANKEX": ["^BSEBANK", "BSEBANK.BO", "^BSEBANKEX"]}
+    for sym, alts in ALT.items():
+        if sym in data:
+            continue
+        for y in alts:
+            try:
+                f = yf.download(y, period="15mo", interval="1d", auto_adjust=False, actions=False, progress=False)
+                if isinstance(f.columns, pd.MultiIndex):
+                    f.columns = f.columns.get_level_values(0)
+                f = f.dropna(subset=["Close"])
+                f = f[f["Close"] > 0]
+                if len(f) >= 100:
+                    data[sym] = f
+                    print(f"{sym}: using Yahoo code {y}")
+                    break
+            except Exception as e:
+                print(f"{sym} via {y} failed: {e}")
+        if sym not in data:
+            print(f"{sym}: not available on Yahoo")
     if len(data) < 300:
         sys.exit(f"Too few symbols fetched ({len(data)}); keeping previous data")
     # drop today's bar if the run happens before the close is final (runs are scheduled after 18:30 IST)
