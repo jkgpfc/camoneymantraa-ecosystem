@@ -18,6 +18,7 @@ self.addEventListener('fetch', e => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
+  if (url.pathname.includes('/tapebot/')) return;   // Tape Reader Bot is a separate app: never cache it as the ecosystem page
 
   if (req.mode === 'navigate') {
     // Network first with a 4 s fallback to the cached page; the network copy still refreshes the cache.
