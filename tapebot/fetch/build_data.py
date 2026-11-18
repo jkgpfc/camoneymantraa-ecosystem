@@ -28,6 +28,15 @@ INDEX_TICKERS = {
     "^BSESN": ("SENSEX", "BSE SENSEX"),
     "BSE-BANK.BO": ("BANKEX", "BSE BANKEX"),
 }
+# Global commodity futures (USD) - shown as benchmarks, not MCX prices
+GLOBAL_TICKERS = {
+    "GC=F": ("GL:GOLD", "COMEX Gold (USD/oz)"), "SI=F": ("GL:SILVER", "COMEX Silver (USD/oz)"),
+    "HG=F": ("GL:COPPER", "COMEX Copper (USD/lb)"), "PL=F": ("GL:PLATINUM", "NYMEX Platinum (USD/oz)"),
+    "PA=F": ("GL:PALLADIUM", "NYMEX Palladium (USD/oz)"), "ALI=F": ("GL:ALUMINIUM", "COMEX Aluminium (USD/t)"),
+    "CL=F": ("GL:CRUDEOIL", "NYMEX WTI Crude (USD/bbl)"), "BZ=F": ("GL:BRENT", "ICE Brent Crude (USD/bbl)"),
+    "NG=F": ("GL:NATGAS", "NYMEX Natural Gas (USD/MMBtu)"), "CT=F": ("GL:COTTON", "ICE Cotton (USc/lb)"),
+    "INR=X": ("GL:USDINR", "USD/INR"),
+}
 
 
 def get_symbols():
@@ -102,7 +111,9 @@ def main():
     meta = {s: (n, sr) for s, n, sr in syms}
     for y, (s, n) in INDEX_TICKERS.items():
         meta[s] = (n, "IDX")
-    tick = {**{y: s for y, (s, n) in INDEX_TICKERS.items()}, **{f"{s}.NS": s for s, _, _ in syms}}
+    for y, (s, n) in GLOBAL_TICKERS.items():
+        meta[s] = (n, "GLB")
+    tick = {**{y: s for y, (s, n) in INDEX_TICKERS.items()}, **{y: s for y, (s, n) in GLOBAL_TICKERS.items()}, **{f"{s}.NS": s for s, _, _ in syms}}
     names = list(tick)
     data = {}
     for i in range(0, len(names), 100):
@@ -145,7 +156,22 @@ def main():
             print(f"{sym}: not available on Yahoo")
     if len(data) < 300:
         sys.exit(f"Too few symbols fetched ({len(data)}); keeping previous data")
-    # drop today's bar if the run happens before the close is final (runs are scheduled after 18:30 IST)
+    # MCX futures (continuous front month), kept as history on the data branch
+    mcx_info = {}
+    try:
+        import mcx
+        h = mcx.build(os.path.join(OUT, "mcx_history.json"))
+        mcx_info = {"status": h.get("status"), "keys": h.get("keys"), "days": h.get("days_fetched"), "series": 0}
+        for sym, v in h["s"].items():
+            if len(v["d"]) < 20:
+                continue
+            idx = pd.to_datetime(v["d"])
+            data["MCX:" + sym] = pd.DataFrame({"Open": v["o"], "High": v["h"], "Low": v["l"], "Close": v["c"], "Volume": v["v"]}, index=idx)
+            meta["MCX:" + sym] = (f"MCX {sym} futures ({v.get('inst', 'FUTCOM')}, continuous)", "MCX")
+            mcx_info["series"] += 1
+    except Exception as e:
+        mcx_info = {"status": f"failed: {str(e)[:120]}"}
+    print("MCX", mcx_info)
     dates = sorted({d.strftime("%Y-%m-%d") for f in data.values() for d in f.index})
     didx = {d: k for k, d in enumerate(dates)}
     out = {"v": 1, "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"), "dates": dates, "s": []}
@@ -160,7 +186,8 @@ def main():
         g.write(raw)
     idx_ok = sorted(s for s in data if meta.get(s, ("", ""))[1] == "IDX")
     etf_n = sum(1 for s in data if meta.get(s, ("", ""))[1] == "ETF")
-    info = {"generated": out["generated"], "lastSession": dates[-1], "symbols": len(out["s"]), "indices": idx_ok, "etfs": etf_n, "bytes": os.path.getsize(os.path.join(OUT, "prices.json.gz"))}
+    glb = sorted(s for s in data if meta.get(s, ("", ""))[1] == "GLB")
+    info = {"generated": out["generated"], "lastSession": dates[-1], "symbols": len(out["s"]), "indices": idx_ok, "etfs": etf_n, "global": glb, "mcx": mcx_info, "bytes": os.path.getsize(os.path.join(OUT, "prices.json.gz"))}
     with open(os.path.join(OUT, "info.json"), "w") as f:
         json.dump(info, f)
     print(info)
