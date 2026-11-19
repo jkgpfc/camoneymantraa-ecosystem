@@ -1,4 +1,4 @@
-"""Tape Reader Bot - nightly data build (runs on GitHub Actions).
+"""Tape Reader Bot - nightly data build (runs on GitHub Actions; also on each push to this folder).
 Downloads ~15 months of daily bars for every NSE equity (+ NIFTY 50) from Yahoo Finance
 and writes one gzipped JSON file that the bot loads directly from GitHub.
 """
