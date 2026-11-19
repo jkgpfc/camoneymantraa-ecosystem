@@ -10,13 +10,36 @@ from email.utils import parsedate_to_datetime
 import requests
 
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"}
-STRIP = re.compile(r"\b(limited|ltd\.?|the|india|corporation|corp\.?|company|co\.?)\b", re.I)
+STRIP = re.compile(r"\b(limited|ltd\.?)\b", re.I)
+GENERIC = {"india", "indian", "the", "and", "of", "corporation", "company", "co", "corp", "industries", "enterprises", "finance", "financial", "bank", "power", "energy", "infra", "ltd"}
+# headlines that are tips, price predictions or market roundups, not company news
+NOISE = re.compile(r"prediction|target price|buy,? sell or hold|stocks? to (buy|watch)|share price (today|live)|stock price live|live updates?|technical (view|outlook)|top (gainers|losers)|stocks in news|multibagger|penny stock|should you buy|trade setup|ask profit|intraday pick", re.I)
+KEY = re.compile(r"result|profit|revenue|earning|q[1-4]|order|contract|dividend|acqui|merger|demerger|stake|board|approv|rating|guidance|block deal|bulk deal|qip|bonus|split|buyback|raises|fund ?rais|bond|ncd|ipo|ofs|promoter|pledge|resign|appoint|ceo|md\b|cfo|plant|capacity|launch|expan|sebi|penalt|tax|default|downgrade|upgrade", re.I)
+
+
+def _clean_name(name):
+    return re.sub(r"\s+", " ", STRIP.sub("", name or "").replace("&", " and ")).strip()
 
 
 def _query(sym, name):
-    n = STRIP.sub("", name or "").replace("&", " ").strip()
-    n = re.sub(r"\s+", " ", n)
-    return f'"{n}" share' if len(n) >= 4 else f'{sym} NSE share'
+    n = _clean_name(name)
+    return f'"{n}"' if len(n) >= 4 else f'"{sym}" NSE'
+
+
+def _matches(title, sym, name):
+    t = title.lower()
+    if re.search(r"(?<![a-z0-9])" + re.escape(sym.lower()) + r"(?![a-z0-9])", t):
+        return True
+    words = [w for w in re.findall(r"[a-z0-9]+", _clean_name(name).lower())]
+    if not words:
+        return False
+    if " ".join(words) in t:
+        return True
+    distinct = [w for w in words if w not in GENERIC and len(w) >= 3]
+    lead = " ".join(words[:2]) if len(words) >= 2 else words[0]
+    if len(words) >= 2 and re.search(r"(?<![a-z0-9])" + re.escape(lead) + r"(?![a-z0-9])", t):
+        return True                                          # e.g. "power finance", "state bank"
+    return bool(distinct) and all(re.search(r"(?<![a-z0-9])" + re.escape(w) + r"(?![a-z0-9])", t) for w in distinct[:2])
 
 
 def _news_one(args):
@@ -39,10 +62,11 @@ def _news_one(args):
                 dt = parsedate_to_datetime(it.findtext("pubDate"))
             except Exception:
                 continue
-            if dt < cutoff:
+            if dt < cutoff or NOISE.search(title) or not _matches(title, sym, name):
                 continue
             out.append({"t": title[:180], "p": pub[:40], "u": it.findtext("link") or "", "d": dt.astimezone(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%d %H:%M")})
         out.sort(key=lambda x: x["d"], reverse=True)
+        out.sort(key=lambda x: 0 if KEY.search(x["t"]) else 1)      # company-event headlines first, newest first within each group
         seen, uniq = set(), []
         for x in out:                                   # drop near-duplicate headlines
             k = re.sub(r"\W+", "", x["t"].lower())[:60]
