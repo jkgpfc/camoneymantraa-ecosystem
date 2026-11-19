@@ -82,6 +82,14 @@ button,select,input,textarea{-webkit-tap-highlight-color:transparent}
   #modal .box{margin:0;border-radius:0;min-height:100vh;padding:12px;padding-top:calc(12px + env(safe-area-inset-top));padding-bottom:calc(24px + env(safe-area-inset-bottom))}
 }
 @media print{header,nav,button{display:none}}
+#gate{position:fixed;inset:0;z-index:50;background:rgba(10,20,30,.92);overflow:auto;display:flex;align-items:flex-start;justify-content:center;padding:24px 12px}
+#gate .gbox{background:#fff;color:var(--ink);max-width:560px;width:100%;border-radius:12px;padding:18px}
+#gate h2{margin:0;font-size:20px}#gate .gdisc{font-size:12.5px;line-height:1.5;max-height:46vh;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:10px;background:#fafbfc}
+#gate .gdisc p{margin:0 0 8px}
+.kc{border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-top:8px;background:#fbfcfe}
+.kc-h{font-weight:700;font-size:13px;margin-bottom:4px}.kc-r{display:flex;gap:8px;font-size:12.5px;line-height:1.4;padding:3px 0;border-top:1px dashed #edf0f4}
+.kc-r:first-of-type{border-top:0}.kc-t{flex:0 0 58px;color:var(--mut);font-weight:600}.kc-r a{color:var(--ink);text-decoration:none}.kc-r a:hover{text-decoration:underline}
+.kc-x{white-space:nowrap;font-weight:700;margin-left:2px}
 </style>
 </head>
 <body>
@@ -1356,7 +1364,8 @@ async function syncFromCloud(force) {
   finally { clearTimeout(tm); }
   if (!info || !info.lastSession) throw new Error('no data published yet');
   S.cloudInfo = info;
-  if (!force && S.cloudGen === info.generated && medianBars() >= 200) { S.lastSession = info.lastSession; addLog(`GitHub data is current (${info.lastSession}, ${info.symbols.toLocaleString()} stocks).`); return { ok: true, same: true, info }; }
+  if (!force && S.cloudGen === info.generated && medianBars() >= 200) {
+    if (!S.news || !S.resq) await loadCloudExtras(base); S.lastSession = info.lastSession; addLog(`GitHub data is current (${info.lastSession}, ${info.symbols.toLocaleString()} stocks).`); return { ok: true, same: true, info }; }
   addLog(`Downloading GitHub data: ${info.symbols.toLocaleString()} stocks up to ${info.lastSession} (${(info.bytes / 1e6).toFixed(1)} MB)…`);
   setProg(1, 4, `Downloading ${(info.bytes / 1e6).toFixed(1)} MB from GitHub…`);
   const r = await fetch(base + 'prices.json.gz?t=' + encodeURIComponent(info.generated), { cache: 'no-store' });
@@ -1375,8 +1384,44 @@ async function syncFromCloud(force) {
   S.bars = fresh;
   await DB.clearBars(); await DB.putBars([...fresh.keys()]);
   S.cloudGen = info.generated; S.cloudInfo = info; S.lastSession = info.lastSession; DB.set('cloudGen', info.generated); DB.set('cloudInfo', info);
+  await loadCloudExtras(base);
   addLog(`✓ Loaded ${fresh.size.toLocaleString()} stocks from GitHub (up to ${info.lastSession}).`);
   return { ok: true, info };
+}
+
+async function loadCloudExtras(base) {
+  for (const [file, key, field] of [['news.json', 'news', 'n'], ['results.json', 'resq', 'r']]) {
+    try { const r = await fetch(base + file + '?t=' + encodeURIComponent((S.cloudInfo && S.cloudInfo.generated) || Date.now()), { cache: 'no-store' }); if (!r.ok) continue; const j = await r.json(); S[key] = j[field] || {}; DB.set(key, S[key]); } catch (e) { }
+  }
+}
+
+/* ---- Key changes panel (results + news with the market's reaction, W4) ---- */
+function newsReaction(b, ds) {
+  const day = ds.slice(0, 10), after = ds.slice(11) > '15:30';
+  let i = b.d.findIndex(d => after ? d > day : d >= day);
+  if (i < 0) return { txt: 'awaiting next session', cls: 'mut' };
+  if (i < 1) return null;
+  const chg = b.c[i] / b.c[i - 1] - 1; let s = 0, n = 0; for (let k = Math.max(0, i - 50); k < i; k++) { s += b.v[k]; n++; }
+  const vr = n && s > 0 ? b.v[i] / (s / n) : NaN;
+  const strong = Math.abs(chg) >= 0.02 && (!isFinite(vr) || vr >= 1.5);
+  return { txt: `${chg >= 0 ? '+' : ''}${(chg * 100).toFixed(1)}%${isFinite(vr) && vr > 0 ? ' · ' + vr.toFixed(1) + '× vol' : ''}${strong ? '' : ' · muted'}`, cls: strong ? (chg > 0 ? 'up' : 'dn') : 'mut' };
+}
+function keyChangesHtml(sym, R) {
+  if (R && R.isIndex) return '';
+  const r = S.resq && S.resq[sym], news = (S.news && S.news[sym]) || [], b = S.bars.get(sym);
+  const p = x => x == null ? '' : `<span class="${x > 0 ? 'up' : x < 0 ? 'dn' : ''}">${x > 0 ? '+' : ''}${x}%</span>`;
+  const rows = [];
+  if (r && r.q && (Date.now() - Date.parse(r.q)) < 200 * 864e5) {
+    const q = new Date(r.q + 'T00:00:00Z').toLocaleDateString('en-IN', { month: 'short', year: 'numeric', timeZone: 'UTC' });
+    const part = (lab, v, y, qq) => v == null ? '' : `${lab} ₹${fmt(v, 0)} cr ${p(y)}${y != null ? ' YoY' : ''}${qq != null ? ' · ' + p(qq) + ' QoQ' : ''}`;
+    rows.push(`<div class="kc-r"><span class="kc-t">Results</span><span>Qtr to ${q}: ${[part('Revenue', r.rev, r.revY, r.revQ), part('Net profit', r.pat, r.patY, r.patQ)].filter(Boolean).join(' &nbsp;|&nbsp; ')}</span></div>`);
+  }
+  for (const n of news.slice(0, 3)) {
+    const re = b ? newsReaction(b, n.d) : null;
+    const dt = new Date(n.d.slice(0, 10) + 'T00:00:00Z').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', timeZone: 'UTC' });
+    rows.push(`<div class="kc-r"><span class="kc-t">${dt}</span><span><a href="${esc(n.u)}" target="_blank" rel="noopener noreferrer">${esc(n.t)}</a> <span class="mut">· ${esc(n.p)}</span>${re ? ` <span class="kc-x ${re.cls}" title="Price reaction on the session after the news (W4: judge news by price reaction)">${esc(re.txt)}</span>` : ''}</span></div>`);
+  }
+  return `<div class="kc"><div class="kc-h">Key changes${S.cloudInfo ? ` <span class="mut small">· as of ${esc(S.cloudInfo.lastSession)}</span>` : ''}</div>${rows.length ? rows.join('') : '<div class="mut small">No results or news in the last 3 weeks.</div>'}<div class="mut small" style="margin-top:4px">Headlines link to the publisher. The coloured figure is the price move on the session after the news (W4).</div></div>`;
 }
 
 /* ---- Orchestrator ---- */
@@ -1511,10 +1556,6 @@ async function loadDataSnapshot(file) {
   }
 }
 
-async function saveHtmlApp() {
-  const docHtml = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
-  await shareOrDownload('Tape_Reader_Bot_iPhone.html', docHtml, 'text/html');
-}
 
 /* ======================= LIVE 5-MIN INTRADAY ======================= */
 async function fetchLiveIntraday() {
@@ -1649,6 +1690,11 @@ async function runScan() {
   refreshHeader(); if (S.tab === 'data') S.tab = 'tone'; render();
 }
 
+function refreshUserBadge() {
+  let el = $('#hdrUser');
+  if (!el) { el = document.createElement('span'); el.id = 'hdrUser'; el.className = 'badge'; el.style.cursor = 'pointer'; el.title = 'Sign out'; el.onclick = () => { if (confirm('Sign out?')) signOut(); }; const h = document.querySelector('header'); h.insertBefore(el, $('#btnSync')); }
+  el.textContent = S.user && S.user.email ? (isAdmin() ? '★ ' : '') + S.user.email.split('@')[0] + ' · Sign out' : 'Guest · Exit';
+}
 function refreshHeader() {
   let maxD = '', nb = 0; for (const b of S.bars.values()) { if (b.d.length) { nb += b.d.length; const d = b.d[b.d.length - 1]; if (d > maxD) maxD = d; } }
   $('#hdrData').textContent = S.bars.size ? `${S.bars.size.toLocaleString()} syms · ${maxD || '–'}` : 'No data';
@@ -1665,9 +1711,9 @@ function refreshHeader() {
 }
 
 /* ======================= VIEWS ======================= */
-const TABS = [['data', 'Data'], ['tone', 'Market tone'], ['indices', 'Indices'], ['commodities', 'Commodities'], ['intraday', 'Intraday'], ['btst', 'BTST'], ['swing', 'Swing'], ['short', 'Short term'], ['medium', 'Medium term'], ['long', 'Long term'], ['avoid', 'Avoid / Exit'], ['hold', 'My holdings'], ['search', 'Stock lookup'], ['rules', 'Rules'], ['journal', 'Journal'], ['settings', 'Settings']];
+const TABS = [['data', 'Data'], ['tone', 'Market tone'], ['indices', 'Indices'], ['commodities', 'Commodities'], ['intraday', 'Intraday'], ['btst', 'BTST'], ['swing', 'Swing'], ['short', 'Short term'], ['medium', 'Medium term'], ['long', 'Long term'], ['avoid', 'Avoid / Exit'], ['hold', 'My holdings'], ['search', 'Stock lookup'], ['rules', 'Rules'], ['journal', 'Journal'], ['settings', 'Settings'], ['logins', 'Logins']];
 function renderNav() {
-  $('#nav').innerHTML = TABS.map(([k, l]) => { const cnt = !S.out ? null : k === 'indices' ? (S.out.indices || []).filter(r => !/^(MCX|GLB)$/.test(r.series)).length : k === 'commodities' ? (S.out.indices || []).filter(r => /^(MCX|GLB)$/.test(r.series)).length : S.out.lists[k] ? S.out.lists[k].length : null; const n = cnt != null ? `<span class="n">${cnt}</span>` : ''; return `<a data-t="${k}" class="${S.tab === k ? 'on' : ''}">${l}${n}</a>`; }).join('');
+  $('#nav').innerHTML = TABS.filter(([k]) => k !== 'logins' || isAdmin()).map(([k, l]) => { const cnt = !S.out ? null : k === 'indices' ? (S.out.indices || []).filter(r => !/^(MCX|GLB)$/.test(r.series)).length : k === 'commodities' ? (S.out.indices || []).filter(r => /^(MCX|GLB)$/.test(r.series)).length : S.out.lists[k] ? S.out.lists[k].length : null; const n = cnt != null ? `<span class="n">${cnt}</span>` : ''; return `<a data-t="${k}" class="${S.tab === k ? 'on' : ''}">${l}${n}</a>`; }).join('');
   $('#nav').querySelectorAll('a').forEach(a => a.onclick = () => { S.tab = a.dataset.t; render(); });
 }
 function render() { renderNav(); const v = VIEWS[S.tab] || VIEWS.data; $('#main').innerHTML = v(); (POST[S.tab] || (() => { }))(); }
@@ -1755,7 +1801,6 @@ const VIEWS = {
         <button onclick="exportPrices()">Save Prices (CSV)</button>
       </div>
       <div class="row" style="margin-top:8px">
-        <button onclick="saveHtmlApp()">Save HTML App</button>
         <button onclick="clearStore()">${S.clearArmed ? 'Tap again to confirm clear' : 'Clear On-Device Cache'}</button>
       </div>
       <label style="margin-top:10px">Restore Saved Data Snapshot (.json)</label>
@@ -1835,7 +1880,9 @@ const VIEWS_MORE = {
       <div style="margin-top:10px"><button class="pri" onclick="saveOpt()">Save & re-scan</button></div></div>`; }
 };
 Object.assign(VIEWS, VIEWS_MORE);
+VIEWS.logins = () => isAdmin() ? `<div class="card"><h3>Past sign-ins (admin only)</h3><p class="small mut">Read from your private Google Sheet. The log checks your Google sign-in before it answers, so no one else can open it.</p><div id="loginsBox"></div></div>` : '<div class="card">Admin only.</div>';
 const POST = {
+  logins: () => { if (isAdmin()) loadLogins(); },
   data: () => { const fp = $('#fPrice'), ff = $('#fFund'), fs = $('#fSnap'); if (fp) fp.onchange = e => loadPriceFiles([...e.target.files]); if (ff) ff.onchange = e => e.target.files[0] && loadFundFile(e.target.files[0]); if (fs) fs.onchange = e => e.target.files[0] && loadDataSnapshot(e.target.files[0]); },
   rules: () => { const f = () => { const s = $('#rsrc').value, m = $('#rmode').value; $('#rbody').innerHTML = RULES.list.filter(r => (!s || r.src === s) && (!m || r.mode === m)).map(r => `<tr><td>${r.id}</td><td>${esc(r.src)}</td><td style="white-space:normal">${esc(r.rule)}</td><td><b>${r.mode}</b></td></tr>`).join(''); }; $('#rsrc').onchange = f; $('#rmode').onchange = f; f(); },
   search: () => { $('#q').onkeydown = e => e.key === 'Enter' && lookup(); $('#q').focus(); }
@@ -1898,6 +1945,7 @@ function openDetail(sym, x, k) {
   $('#mbox').innerHTML = `<div class="row"><h2 style="margin:0;flex:4">${esc(sym)} <span class="mut small">${esc(R.name || (f && f.name) || '')} · ${R.date} · ₹${fmt(R.close)} <span class="${cls(R.chg)}">${pct(R.chg)}</span></span></h2><button style="flex:0" onclick="closeModal()">Close ✕</button></div>
   ${x ? `<div class="note"><b>${esc(k ? HZ[k].title : '')}:</b> ${esc(x.setup || (x.why || []).join(', '))}</div>` : ''}
   <canvas id="chart" height="300"></canvas>
+  ${keyChangesHtml(sym, R)}
   <div class="grid" style="margin-top:12px">
    <div class="card"><h3>Wyckoff five-step test (W100)</h3>${fs}</div>
    <div class="card"><h3>Tape read</h3>
@@ -1987,16 +2035,115 @@ function exportPrices() { if (!S.bars.size) { showToast('No fetched prices to sa
 async function clearStore() { if (!S.clearArmed) { S.clearArmed = true; render(); setTimeout(() => { S.clearArmed = false; if (S.tab === 'data') render(); }, 4500); return; } S.clearArmed = false; await DB.clearBars(); S.bars.clear(); S.out = null; showToast('Cleared cached price data'); refreshHeader(); render(); }
 function saveOpt() { document.querySelectorAll('[data-o]').forEach(el => { const k = el.dataset.o; S.opt[k] = el.type === 'number' ? +el.value : el.value.trim(); }); DB.set('opt', S.opt); runScan(); }
 
+/* ======================= DISCLAIMER + GOOGLE SIGN-IN ======================= */
+// Fill these two after the one-time setup (Google Cloud client ID + Apps Script web-app URL).
+const AUTH = { clientId: '', logUrl: '', admin: 'camoneymantraa@gmail.com', hours: 12 };
+const DISCLAIMER_VERSION = '2026-11-19';
+const DISCLAIMER_HTML = `
+  <p><b>Not registered with SEBI as an Investment Adviser or Research Analyst. Education and information only. Not investment advice, not a recommendation to buy, sell or hold any security.</b></p>
+  <p>The author is not a SEBI-registered investment adviser or research analyst. Screens, scores, pros/cons, patterns, DCF values and backtest results are mechanical calculations on past data and can be wrong. Past performance does not guarantee future results. Investments in securities markets are subject to market risks; read all related documents carefully and consult a registered adviser before investing.</p>
+  <p>Entry, stop and target levels in this tool are outputs of fixed rules applied to past prices. They are not tips or calls. Data comes from public sources (Yahoo Finance, NSE, Google News) and can be late, missing or wrong.</p>
+  <p><b>F&amp;O risk:</b> 9 out of 10 individual traders in the equity F&amp;O segment incurred net losses (SEBI study, 25-Jan-2023, FY 2021-22). About 91% of individual traders incurred net losses in FY 2024-25, aggregate ₹1,05,603 crore (SEBI PR 39/2025, 07-Jul-2025). No tips, no assured returns, no PMS, no handling of funds.</p>
+  <p>By signing in, your Google name and email and the time of sign-in are recorded so the site owner can see who accessed the tool. Nothing else about you is collected.</p>`;
+
+function readSession() { try { const s = JSON.parse(localStorage.getItem('tb_session') || 'null'); if (s && s.exp > Date.now() && s.v === DISCLAIMER_VERSION) return s; } catch (e) { } return null; }
+function writeSession(s) { try { localStorage.setItem('tb_session', JSON.stringify(s)); } catch (e) { } }
+function signOut() { try { localStorage.removeItem('tb_session'); } catch (e) { } try { google.accounts.id.disableAutoSelect(); } catch (e) { } location.reload(); }
+function jwtPayload(tok) { try { const p = tok.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'); return JSON.parse(decodeURIComponent(escape(atob(p + '==='.slice((p.length + 3) % 4))))); } catch (e) { return null; } }
+const isAdmin = () => !!(S.user && S.user.email && S.user.email.toLowerCase() === AUTH.admin.toLowerCase());
+let gsiLoading = null;
+function loadGsi() {
+  if (window.google && google.accounts && google.accounts.id) return Promise.resolve();
+  if (!gsiLoading) gsiLoading = new Promise((res, rej) => { const sc = document.createElement('script'); sc.src = 'https://accounts.google.com/gsi/client'; sc.async = true; sc.onload = res; sc.onerror = () => rej(new Error('Google sign-in could not load')); document.head.appendChild(sc); });
+  return gsiLoading;
+}
+function logLogin(credential) {
+  if (!AUTH.logUrl) return;
+  try { fetch(AUTH.logUrl, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ credential, ua: navigator.userAgent, page: location.href.split('#')[0], disclaimer: DISCLAIMER_VERSION }) }); } catch (e) { }
+}
+function authGate() {
+  const s = readSession();
+  if (s) { S.user = s; return Promise.resolve(); }
+  return new Promise(resolve => {
+    const g = document.createElement('div'); g.id = 'gate';
+    g.innerHTML = `<div class="gbox"><h2>Tape Reader Bot</h2><div class="mut small" style="margin-bottom:8px">Rule-based market study tool · CA Money Mantra</div>
+      <div class="gdisc">${DISCLAIMER_HTML}</div>
+      <label class="ck" style="color:var(--ink);font-size:13px;margin:10px 0"><input type="checkbox" id="gAccept"> I have read and accept this disclaimer.</label>
+      <div id="gBtn" style="min-height:44px"></div><div id="gMsg" class="small mut" style="margin-top:6px"></div></div>`;
+    document.body.appendChild(g);
+    const msg = t => { $('#gMsg').textContent = t; };
+    const done = sess => { S.user = sess; writeSession(sess); g.remove(); resolve(); };
+    if (!AUTH.clientId) {                         // sign-in not configured yet: disclaimer acceptance only
+      $('#gBtn').innerHTML = '<button class="pri" id="gEnter" style="width:100%;padding:10px">Accept and enter</button>';
+      $('#gEnter').onclick = () => { if (!$('#gAccept').checked) { msg('Tick the box to accept the disclaimer first.'); return; } done({ email: '', name: 'Guest', exp: Date.now() + AUTH.hours * 3600e3, v: DISCLAIMER_VERSION }); };
+      msg('Google sign-in is not switched on yet.');
+      return;
+    }
+    loadGsi().then(() => {
+      google.accounts.id.initialize({
+        client_id: AUTH.clientId, auto_select: false, cancel_on_tap_outside: true,
+        callback: r => {
+          if (!$('#gAccept').checked) { msg('Tick the box to accept the disclaimer first, then sign in again.'); return; }
+          const p = jwtPayload(r.credential);
+          if (!p || !p.email || p.email_verified === false) { msg('Sign-in failed. Try again.'); return; }
+          logLogin(r.credential);
+          done({ email: p.email, name: p.name || p.email, picture: p.picture || '', exp: Date.now() + AUTH.hours * 3600e3, v: DISCLAIMER_VERSION, cred: r.credential, credAt: Date.now() });
+        }
+      });
+      google.accounts.id.renderButton($('#gBtn'), { theme: 'filled_blue', size: 'large', text: 'signin_with', shape: 'pill', width: 300 });
+    }).catch(e => msg(e.message + '. Check your connection and reload.'));
+  });
+}
+
+/* ---- Admin: past logins (verified server-side against the admin's Google token) ---- */
+function jsonp(url, timeout = 20000) {
+  return new Promise((res, rej) => {
+    const cb = 'tbcb' + Date.now() + Math.floor(Math.random() * 1e4); const sc = document.createElement('script');
+    const tm = setTimeout(() => { cleanup(); rej(new Error('timeout')); }, timeout);
+    function cleanup() { clearTimeout(tm); delete window[cb]; sc.remove(); }
+    window[cb] = d => { cleanup(); res(d); };
+    sc.onerror = () => { cleanup(); rej(new Error('could not reach the login log')); };
+    sc.src = url + (url.includes('?') ? '&' : '?') + 'callback=' + cb; document.head.appendChild(sc);
+  });
+}
+async function loadLogins() {
+  const box = $('#loginsBox'); if (!box) return;
+  if (!AUTH.logUrl) { box.innerHTML = '<div class="note">The login log is not connected yet.</div>'; return; }
+  const fresh = S.user.cred && Date.now() - (S.user.credAt || 0) < 50 * 60e3;
+  if (!fresh) {
+    box.innerHTML = '<div class="note">For security, confirm it is you to view the log.</div><div id="admBtn"></div>';
+    await loadGsi();
+    google.accounts.id.initialize({ client_id: AUTH.clientId, callback: r => { const p = jwtPayload(r.credential); if (!p || p.email.toLowerCase() !== AUTH.admin.toLowerCase()) { showToast('Not the admin account', 'err'); return; } S.user.cred = r.credential; S.user.credAt = Date.now(); writeSession(S.user); loadLogins(); } });
+    google.accounts.id.renderButton($('#admBtn'), { theme: 'outline', size: 'large', text: 'continue_with' });
+    return;
+  }
+  box.innerHTML = '<div class="mut small">Loading…</div>';
+  try {
+    const d = await jsonp(AUTH.logUrl + '?action=logs&credential=' + encodeURIComponent(S.user.cred));
+    if (!d || !d.ok) { box.innerHTML = `<div class="note red">${esc((d && d.error) || 'Access denied')}</div>`; return; }
+    S.logins = d.rows || [];
+    const users = new Set(S.logins.map(r => r[1])).size;
+    box.innerHTML = `<div class="kpi" style="margin-bottom:10px"><div><b>${S.logins.length.toLocaleString()}</b><span>sign-ins</span></div><div><b>${users}</b><span>people</span></div></div>
+      <input type="text" id="lgFilter" placeholder="Filter by email or name" style="max-width:320px;margin-bottom:8px">
+      <div class="tw"><table><thead><tr><th>Time (IST)</th><th>Email</th><th>Name</th><th>Device</th></tr></thead><tbody id="lgBody"></tbody></table></div>`;
+    const draw = () => { const q = ($('#lgFilter').value || '').toLowerCase(); $('#lgBody').innerHTML = S.logins.filter(r => !q || String(r[1]).toLowerCase().includes(q) || String(r[2]).toLowerCase().includes(q)).slice(0, 1000).map(r => `<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td>${esc(r[2])}</td><td style="white-space:normal;max-width:360px" class="small mut">${esc(deviceName(r[3]))}</td></tr>`).join(''); };
+    $('#lgFilter').oninput = draw; draw();
+  } catch (e) { box.innerHTML = `<div class="note red">${esc(e.message)}</div>`; }
+}
+function deviceName(ua) { ua = String(ua || ''); const os = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows' : /Mac OS/.test(ua) ? 'Mac' : /Linux/.test(ua) ? 'Linux' : 'Other'; const br = /Edg\//.test(ua) ? 'Edge' : /CriOS|Chrome\//.test(ua) ? 'Chrome' : /FxiOS|Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : ''; return os + (br ? ' · ' + br : ''); }
+
 /* ======================= BOOT ======================= */
 try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { }
 $('#btnRun').onclick = runScan;
 $('#btnSync').onclick = () => S.syncing ? stopAutoSync() : autoSyncEOD(false);
 (async () => {
+  await authGate();
+  refreshUserBadge();
   try {
-    const [bars, fund, fi, opt, jr, hd, ac, ns, na, dsy, cg] = await Promise.all([
+    const [bars, fund, fi, opt, jr, hd, ac, ns, na, dsy, cg, nw, rq, ci] = await Promise.all([
       DB.allBars(), DB.get('fund'), DB.get('fundInfo'), DB.get('opt'),
       DB.get('journal'), DB.get('holdings'), DB.get('autoCfg'),
-      DB.get('nseAllSyms'), DB.get('nseAllAt'), DB.get('deadSyms'), DB.get('cloudGen')
+      DB.get('nseAllSyms'), DB.get('nseAllAt'), DB.get('deadSyms'), DB.get('cloudGen'), DB.get('news'), DB.get('resq'), DB.get('cloudInfo')
     ]);
     (bars || []).forEach(b => { if (!b.dq) b.dq = new Array(b.d.length).fill(NaN); S.bars.set(b.sym, b); });
     if (fund) S.fund = new Map(fund); if (fi) S.fundInfo = fi; if (opt) Object.assign(S.opt, opt);
@@ -2006,6 +2153,7 @@ $('#btnSync').onclick = () => S.syncing ? stopAutoSync() : autoSyncEOD(false);
     if (na) S.nseAllAt = na;
     if (dsy) S.deadSyms = dsy;
     if (cg) S.cloudGen = cg;
+    if (nw) S.news = nw; if (rq) S.resq = rq; if (ci) S.cloudInfo = ci;
   } catch (e) { console.warn('Storage unavailable', e); }
   refreshHeader(); render();
   if (S.bars.size) await runScan();

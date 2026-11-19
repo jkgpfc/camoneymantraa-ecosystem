@@ -189,10 +189,28 @@ def main():
     raw = json.dumps(out, separators=(",", ":")).encode()
     with gzip.open(os.path.join(OUT, "prices.json.gz"), "wb", compresslevel=9) as g:
         g.write(raw)
+    # news + quarterly results for the most liquid stocks
+    extras_info = {}
+    try:
+        import extras
+        liq = []
+        for sym, f in data.items():
+            if meta.get(sym, ("", ""))[1] not in ("EQ", "BE", "BZ", "SM", "ST", "ETF"):
+                continue
+            t = (f["Close"] * f["Volume"]).tail(20).median()
+            if t == t:
+                liq.append((float(t), sym))
+        liq.sort(reverse=True)
+        top_news = [(s, meta.get(s, ("", ""))[0]) for _, s in liq[:700] if meta.get(s, ("", ""))[1] != "ETF"]
+        extras_info["news"] = extras.build_news(top_news, OUT)
+        extras_info["results"] = extras.build_results([s for _, s in liq[:1500] if meta.get(s, ("", ""))[1] != "ETF"], OUT)
+    except Exception as e:
+        extras_info["error"] = str(e)[:150]
+    print("extras", extras_info)
     idx_ok = sorted(s for s in data if meta.get(s, ("", ""))[1] == "IDX")
     etf_n = sum(1 for s in data if meta.get(s, ("", ""))[1] == "ETF")
     glb = sorted(s for s in data if meta.get(s, ("", ""))[1] == "GLB")
-    info = {"generated": out["generated"], "lastSession": dates[-1], "symbols": len(out["s"]), "indices": idx_ok, "etfs": etf_n, "global": glb, "mcx": mcx_info, "bytes": os.path.getsize(os.path.join(OUT, "prices.json.gz"))}
+    info = {"generated": out["generated"], "lastSession": dates[-1], "symbols": len(out["s"]), "indices": idx_ok, "etfs": etf_n, "global": glb, "mcx": mcx_info, "extras": extras_info, "bytes": os.path.getsize(os.path.join(OUT, "prices.json.gz"))}
     with open(os.path.join(OUT, "info.json"), "w") as f:
         json.dump(info, f)
     print(info)

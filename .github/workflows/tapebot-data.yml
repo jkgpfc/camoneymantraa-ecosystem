@@ -21,14 +21,14 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Get previous data branch (for the saved symbol list)
         run: |
           git fetch --depth 1 origin data:data || true
           mkdir -p out
-          if git rev-parse --verify data >/dev/null 2>&1; then git show data:tapebot/symbols.csv > out/symbols.csv 2>/dev/null || true; git show data:tapebot/etfs.csv > out/etfs.csv 2>/dev/null || true; git show data:tapebot/mcx_history.json > out/mcx_history.json 2>/dev/null || true; fi
+          if git rev-parse --verify data >/dev/null 2>&1; then git show data:tapebot/symbols.csv > out/symbols.csv 2>/dev/null || true; git show data:tapebot/etfs.csv > out/etfs.csv 2>/dev/null || true; git show data:tapebot/mcx_history.json > out/mcx_history.json 2>/dev/null || true; git show data:tapebot/results.json > out/results.json 2>/dev/null || true; fi
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -38,7 +38,7 @@ jobs:
       - name: Publish to data branch (single commit, no history growth)
         run: |
           cd out
-          mkdir -p ../publish/tapebot && cp prices.json.gz info.json ../publish/tapebot/ && for f in symbols.csv etfs.csv mcx_history.json; do [ -f "$f" ] && cp "$f" ../publish/tapebot/; done; true
+          mkdir -p ../publish/tapebot && cp prices.json.gz info.json ../publish/tapebot/ && for f in symbols.csv etfs.csv mcx_history.json news.json results.json; do [ -f "$f" ] && cp "$f" ../publish/tapebot/; done; true
           cd ../publish
           git init -q -b data
           git config user.name "tapebot-data"
