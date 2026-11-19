@@ -27,6 +27,11 @@ INDEX_TICKERS = {
     "^NSMIDCP": ("NIFTYNXT50", "NIFTY NEXT 50"),
     "^BSESN": ("SENSEX", "BSE SENSEX"),
     "BSE-BANK.BO": ("BANKEX", "BSE BANKEX"),
+    # US indices
+    "^GSPC": ("US:SPX", "S&P 500"), "^DJI": ("US:DOW", "Dow Jones Industrial Average"),
+    "^IXIC": ("US:NASDAQ", "Nasdaq Composite"), "^NDX": ("US:NDX", "Nasdaq 100"),
+    "^RUT": ("US:RUSSELL2000", "Russell 2000"), "^SOX": ("US:SOX", "PHLX Semiconductor"),
+    "^VIX": ("US:VIX", "CBOE Volatility Index"),
 }
 # Global commodity futures (USD) - shown as benchmarks, not MCX prices
 GLOBAL_TICKERS = {
