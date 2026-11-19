@@ -90,6 +90,7 @@ button,select,input,textarea{-webkit-tap-highlight-color:transparent}
 .kc-h{font-weight:700;font-size:13px;margin-bottom:4px}.kc-r{display:flex;gap:8px;font-size:12.5px;line-height:1.4;padding:3px 0;border-top:1px dashed #edf0f4}
 .kc-r:first-of-type{border-top:0}.kc-t{flex:0 0 58px;color:var(--mut);font-weight:600}.kc-r a{color:var(--ink);text-decoration:none}.kc-r a:hover{text-decoration:underline}
 .kc-x{white-space:nowrap;font-weight:700;margin-left:2px}
+th{cursor:pointer;user-select:none;-webkit-user-select:none}th:hover{color:var(--acc)}th[data-sort]{color:var(--acc)}
 </style>
 </head>
 <body>
@@ -2204,6 +2205,33 @@ function wirePaper() {
   const rs = $('#ppReset'); if (rs) rs.onclick = () => { if (!confirm('Reset the paper account? All paper trades will be deleted.')) return; const cap = Math.max(10000, +$('#ppCap').value || 1000000); S.paper = newPaper(cap); savePaper(); render(); };
   const ex = $('#ppExport'); if (ex) ex.onclick = () => { const t = JSON.stringify(S.paper); if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(t).then(() => showToast('Backup copied — paste it into a note', 'ok'), () => showToast('Copy blocked', 'err')); };
 }
+
+
+/* ======================= CLICK-TO-SORT ON EVERY TABLE HEADING ======================= */
+function cellKey(td) {
+  const t = (td ? td.innerText : '').trim().split('\n')[0];
+  if (t === '' || t === '–' || t === '-') return { n: null, s: '' };
+  const c = t.replace(/[₹,%×\s]|R$|cr$/gi, '').replace(/^[+]/, '').replace(/^[−–]/, '-');
+  const m = c.match(/^-?\d+(\.\d+)?/);
+  if (m && /^-?\d+(\.\d+)?(\/\d+)?[a-z]*$/i.test(c)) return { n: parseFloat(m[0]), s: t };
+  return { n: null, s: t.toLowerCase() };
+}
+document.addEventListener('click', e => {
+  const th = e.target.closest('th'); if (!th || e.target.closest('button,input,select,a')) return;
+  const table = th.closest('table'), tb = table && table.tBodies[0]; if (!tb) return;
+  const col = Array.from(th.parentNode.children).indexOf(th);
+  const dir = th.dataset.sort === 'desc' ? 'asc' : 'desc';
+  th.parentNode.querySelectorAll('th').forEach(h => { delete h.dataset.sort; h.textContent = h.textContent.replace(/ [▲▼]$/, ''); });
+  th.dataset.sort = dir; th.textContent += dir === 'desc' ? ' ▼' : ' ▲';
+  const rows = Array.from(tb.rows), keys = new Map(rows.map(r => [r, cellKey(r.cells[col])]));
+  rows.sort((r1, r2) => {
+    const a = keys.get(r1), b = keys.get(r2);
+    if (a.n == null && a.s === '') return 1; if (b.n == null && b.s === '') return -1;      // blanks always last
+    const v = (a.n != null && b.n != null) ? a.n - b.n : a.s.localeCompare(b.s, 'en', { numeric: true });
+    return dir === 'asc' ? v : -v;
+  });
+  rows.forEach(r => tb.appendChild(r));
+});
 
 /* ======================= JOURNAL ======================= */
 function rMult(j) { if (j.exit == null || j.exit === '' || !isFinite(+j.exit)) return null; const risk = Math.abs(j.entry - j.stop); if (!risk) return null; return (j.side === 'SHORT' ? j.entry - j.exit : j.exit - j.entry) / risk; }
