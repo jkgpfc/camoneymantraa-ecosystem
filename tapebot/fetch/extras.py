@@ -13,7 +13,7 @@ UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.3
 STRIP = re.compile(r"\b(limited|ltd\.?)\b", re.I)
 GENERIC = {"india", "indian", "the", "and", "of", "corporation", "company", "co", "corp", "industries", "enterprises", "finance", "financial", "bank", "power", "energy", "infra", "ltd"}
 # headlines that are tips, price predictions or market roundups, not company news
-NOISE = re.compile(r"prediction|target price|buy,? sell or hold|stocks? to (buy|watch)|share price (today|live)|stock price live|live updates?|technical (view|outlook)|top (gainers|losers)|stocks in news|multibagger|penny stock|should you buy|trade setup|ask profit|intraday pick", re.I)
+NOISE = re.compile(r"prediction|target price|buy,? sell or hold|stocks? to (buy|watch)|share price (today|live)|stock price live|live updates?|technical (view|outlook)|top (gainers|losers)|stocks in news|multibagger|penny stock|should you buy|trade setup|ask profit|intraday pick|stock price, news, quote|quote and history|share price, news", re.I)
 KEY = re.compile(r"result|profit|revenue|earning|q[1-4]|order|contract|dividend|acqui|merger|demerger|stake|board|approv|rating|guidance|block deal|bulk deal|qip|bonus|split|buyback|raises|fund ?rais|bond|ncd|ipo|ofs|promoter|pledge|resign|appoint|ceo|md\b|cfo|plant|capacity|launch|expan|sebi|penalt|tax|default|downgrade|upgrade", re.I)
 
 
