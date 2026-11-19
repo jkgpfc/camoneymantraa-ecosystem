@@ -1724,6 +1724,7 @@ async function runScan() {
   try { S.out = TB.run(S.bars, S.fund, S.opt, S.opt.indexSym); S.out.ms = Math.round(performance.now() - t0); S.out.at = new Date().toLocaleString(); }
   catch (e) { showToast('Scan error: ' + e.message, 'err'); console.error(e); }
   running = false; $('#btnRun').disabled = false; $('#btnRun').textContent = 'Scan';
+  try { await loadPaper(); const ev = processPaper(); if (ev) showToast(`Paper account: ${ev} fill/exit update${ev > 1 ? 's' : ''}`, 'ok'); } catch (e) { console.warn(e); }
   refreshHeader(); if (S.tab === 'data') S.tab = 'tone'; render();
 }
 
@@ -1748,7 +1749,7 @@ function refreshHeader() {
 }
 
 /* ======================= VIEWS ======================= */
-const TABS = [['data', 'Data'], ['tone', 'Market tone'], ['indices', 'Indices'], ['commodities', 'Commodities'], ['intraday', 'Intraday'], ['btst', 'BTST'], ['swing', 'Swing'], ['short', 'Short term'], ['medium', 'Medium term'], ['long', 'Long term'], ['avoid', 'Avoid / Exit'], ['hold', 'My holdings'], ['search', 'Stock lookup'], ['rules', 'Rules'], ['journal', 'Journal'], ['settings', 'Settings'], ['logins', 'Logins']];
+const TABS = [['data', 'Data'], ['tone', 'Market tone'], ['indices', 'Indices'], ['commodities', 'Commodities'], ['intraday', 'Intraday'], ['btst', 'BTST'], ['swing', 'Swing'], ['short', 'Short term'], ['medium', 'Medium term'], ['long', 'Long term'], ['avoid', 'Avoid / Exit'], ['hold', 'My holdings'], ['search', 'Stock lookup'], ['rules', 'Rules'], ['paper', 'Paper trading'], ['journal', 'Journal'], ['settings', 'Settings'], ['logins', 'Logins']];
 function renderNav() {
   $('#nav').innerHTML = TABS.filter(([k]) => k !== 'logins' || isAdmin()).map(([k, l]) => { const cnt = !S.out ? null : k === 'indices' ? (S.out.indices || []).filter(r => !/^(MCX|GLB)$/.test(r.series)).length : k === 'commodities' ? (S.out.indices || []).filter(r => /^(MCX|GLB)$/.test(r.series)).length : S.out.lists[k] ? S.out.lists[k].length : null; const n = cnt != null ? `<span class="n">${cnt}</span>` : ''; return `<a data-t="${k}" class="${S.tab === k ? 'on' : ''}">${l}${n}</a>`; }).join('');
   $('#nav').querySelectorAll('a').forEach(a => a.onclick = () => { S.tab = a.dataset.t; render(); });
@@ -1917,8 +1918,10 @@ const VIEWS_MORE = {
       <div style="margin-top:10px"><button class="pri" onclick="saveOpt()">Save & re-scan</button></div></div>`; }
 };
 Object.assign(VIEWS, VIEWS_MORE);
+VIEWS.paper = () => paperView();
 VIEWS.logins = () => isAdmin() ? `<div class="card"><h3>Past sign-ins (admin only)</h3><p class="small mut">Read from your private Google Sheet. The log checks your Google sign-in before it answers, so no one else can open it.</p><div id="loginsBox"></div></div>` : '<div class="card">Admin only.</div>';
 const POST = {
+  paper: () => wirePaper(),
   logins: () => { if (isAdmin()) loadLogins(); },
   data: () => { const fp = $('#fPrice'), ff = $('#fFund'), fs = $('#fSnap'); if (fp) fp.onchange = e => loadPriceFiles([...e.target.files]); if (ff) ff.onchange = e => e.target.files[0] && loadFundFile(e.target.files[0]); if (fs) fs.onchange = e => e.target.files[0] && loadDataSnapshot(e.target.files[0]); },
   rules: () => { const f = () => { const s = $('#rsrc').value, m = $('#rmode').value; $('#rbody').innerHTML = RULES.list.filter(r => (!s || r.src === s) && (!m || r.mode === m)).map(r => `<tr><td>${r.id}</td><td>${esc(r.src)}</td><td style="white-space:normal">${esc(r.rule)}</td><td><b>${r.mode}</b></td></tr>`).join(''); }; $('#rsrc').onchange = f; $('#rmode').onchange = f; f(); },
@@ -2005,9 +2008,10 @@ function openDetail(sym, x, k) {
      <h3 style="margin-top:12px">Pre-trade checklist</h3>${RULES.CHECK.map((c, i) => `<label class=ck style="color:var(--ink)"><input type=checkbox class=pck> ${esc(c)}</label>`).join('')}
      <label>Why this trade (Lynch: 2-line story)</label><input type=text id="pwhy" value="${esc(x.setup || '')}">
      <div style="margin-top:8px"><button class="pri" id="btnLog" disabled>Add to journal</button> <span class="small mut">Enabled only when every box is ticked.</span></div></div>` : ''}
+   ${R.isIndex ? '' : paperOrderForm(sym, x, k)}
   </div>`;
   $('#modal').style.display = 'block'; $('#modal').scrollTop = 0;
-  drawChart($('#chart'), S.bars.get(sym), R, p); wireChartControls(sym, R, p);
+  drawChart($('#chart'), S.bars.get(sym), R, p); wireChartControls(sym, R, p); loadPaper().then(() => wirePaperForm(sym, x, k));
   if (p) { const upd = () => $('#btnLog').disabled = ![...document.querySelectorAll('.pck')].every(c => c.checked); document.querySelectorAll('.pck').forEach(c => c.onchange = upd);
     $('#btnLog').onclick = () => { S.journal.push({ id: Date.now(), date: R.date, sym, horizon: k, side: p.short ? 'SHORT' : 'LONG', setup: $('#pwhy').value, entry: p.entry, stop: p.stop, target: p.target, qty: p.qty, exit: null, exitDate: '', followed: '', notes: '' }); DB.set('journal', S.journal); closeModal(); S.tab = 'journal'; render(); }; }
 }
@@ -2055,6 +2059,150 @@ function drawChart(cv, b0, R, p) {
   if (p) [[p.entry, '#1c6fd1', 'Entry'], [p.stop, '#c0392b', 'Stop'], [p.target, '#0f8a4b', 'Target']].forEach(([v, c, l]) => { g.strokeStyle = c; g.setLineDash([6, 4]); g.beginPath(); g.moveTo(x(n - Math.min(30, Math.ceil(N / 4))), y(v)); g.lineTo(W - padR, y(v)); g.stroke(); g.setLineDash([]); g.fillStyle = c; g.font = 'bold 10px Segoe UI, Arial'; g.fillText(l, x(n - Math.min(30, Math.ceil(N / 4))) - 34, y(v) + 3); });
   g.font = '11px Segoe UI, Arial'; ma.forEach(([, c, l], i) => { g.fillStyle = c; g.fillText(l, 14 + i * 100, 22); }); g.fillStyle = '#6a7a8a'; g.fillText(wk ? 'Weekly' : 'Daily', W - padR - 44, 22);
   g.fillStyle = '#6a7a8a'; g.fillText(b.d[s0], 12, H - vh - 10); g.fillText(b.d[n - 1], W - padR - 62, H - vh - 10);
+}
+
+/* ======================= PAPER TRADING (simulated, saved on this device) ======================= */
+const PAPER_HOLD = { intraday: 0, btst: 1, swing: 15, short: 40, medium: 250, long: 0, manual: 0 };   // max sessions held (0 intraday = same day; long/manual = no time stop)
+function paperKey() { return 'paper:' + ((S.user && S.user.email) || 'guest'); }
+function newPaper(capital) { return { capital, cash: capital, cost: 0.1, orders: [], pos: [], closed: [], created: new Date().toISOString().slice(0, 10), seq: 1 }; }
+async function loadPaper() { if (S.paper) return S.paper; S.paper = (await DB.get(paperKey())) || newPaper(S.opt.capital || 1000000); return S.paper; }
+function savePaper() { DB.set(paperKey(), S.paper); }
+const lastDate = b => b.d[b.d.length - 1];
+function barsAfter(b, d) { const out = []; for (let i = 0; i < b.d.length; i++) if (b.d[i] > d) out.push(i); return out; }
+
+/* Fill pending orders and apply stop / target / time exits on every new bar. Stop is assumed hit first if both are touched in one bar. */
+function processPaper() {
+  const P = S.paper; if (!P) return 0;
+  let events = 0; const cost = v => v * (P.cost || 0) / 100;
+  for (const o of P.orders.slice()) {
+    const b = S.bars.get(o.sym); if (!b) continue;
+    for (const i of barsAfter(b, o.placed)) {
+      let px = null;
+      if (o.type === 'open') px = b.o[i];
+      else if (o.side === 'LONG' && b.h[i] >= o.trigger) px = Math.max(o.trigger, b.o[i]);
+      else if (o.side === 'SHORT' && b.l[i] <= o.trigger) px = Math.min(o.trigger, b.o[i]);
+      if (px == null) { if (o.expires && b.d[i] >= o.expires) { o.status = 'expired'; break; } continue; }
+      const val = px * o.qty;
+      if (o.side === 'LONG' && val + cost(val) > P.cash) { o.status = 'rejected: not enough cash'; break; }
+      P.cash += (o.side === 'LONG' ? -val : val) - cost(val);
+      P.pos.push({ id: o.id, sym: o.sym, side: o.side, qty: o.qty, entry: +px.toFixed(2), stop: o.stop, target: o.target, horizon: o.horizon, setup: o.setup, entryDate: b.d[i], fillIdx: i });
+      o.status = 'filled'; events++; break;
+    }
+  }
+  const keep = [];
+  for (const o of P.orders) {
+    if (!o.status || o.status === 'pending') { o.status = 'pending'; keep.push(o); }
+    else if (o.status !== 'filled') P.closed.push({ ...o, result: o.status, exitDate: lastDate(S.bars.get(o.sym) || { d: [o.placed] }) });
+  }
+  P.orders = keep;
+  for (const p of P.pos.slice()) {
+    const b = S.bars.get(p.sym); if (!b) continue;
+    const start = b.d.indexOf(p.entryDate); if (start < 0) continue;
+    const L = p.side === 'LONG', maxHold = PAPER_HOLD[p.horizon] ?? 0;
+    for (let i = start; i < b.d.length; i++) {
+      if (p.checked && b.d[i] <= p.checked) continue;
+      let px = null, why = '';
+      const first = i === start;
+      if (L) {
+        if (!first && b.o[i] <= p.stop) { px = b.o[i]; why = 'stop (gap)'; }
+        else if (b.l[i] <= p.stop) { px = p.stop; why = 'stop'; }
+        else if (!first && b.o[i] >= p.target) { px = b.o[i]; why = 'target (gap)'; }
+        else if (b.h[i] >= p.target && !first) { px = p.target; why = 'target'; }
+      } else {
+        if (!first && b.o[i] >= p.stop) { px = b.o[i]; why = 'stop (gap)'; }
+        else if (b.h[i] >= p.stop) { px = p.stop; why = 'stop'; }
+        else if (!first && b.o[i] <= p.target) { px = b.o[i]; why = 'target (gap)'; }
+        else if (b.l[i] <= p.target && !first) { px = p.target; why = 'target'; }
+      }
+      const held = i - start;
+      if (px == null && (p.horizon === 'intraday' || (maxHold > 0 && held >= maxHold))) { px = b.c[i]; why = p.horizon === 'intraday' ? 'square-off' : 'time stop'; }
+      p.checked = b.d[i];
+      if (px != null) { closePaper(p, px, b.d[i], why); events++; break; }
+    }
+  }
+  if (events) savePaper();
+  return events;
+}
+function closePaper(p, px, date, why) {
+  const P = S.paper, val = px * p.qty, c = val * (P.cost || 0) / 100;
+  P.cash += (p.side === 'LONG' ? val : -val) - c;
+  const gross = (p.side === 'LONG' ? px - p.entry : p.entry - px) * p.qty;
+  const costs = (p.entry * p.qty + val) * (P.cost || 0) / 100;
+  const risk = Math.abs(p.entry - p.stop) * p.qty;
+  P.closed.push({ ...p, exit: +(+px).toFixed(2), exitDate: date, result: why, pnl: Math.round(gross - costs), r: risk ? +((gross - costs) / risk).toFixed(2) : null });
+  P.pos = P.pos.filter(x => x !== p);
+}
+function paperMark(p) { const b = S.bars.get(p.sym); const m = b ? b.c[b.c.length - 1] : p.entry; return { mark: m, pnl: Math.round((p.side === 'LONG' ? m - p.entry : p.entry - m) * p.qty) }; }
+function paperStats() {
+  const P = S.paper; let mv = 0, open = 0;
+  for (const p of P.pos) { const m = paperMark(p); mv += (p.side === 'LONG' ? 1 : -1) * m.mark * p.qty; open += m.pnl; }
+  const done = P.closed.filter(t => t.pnl != null), wins = done.filter(t => t.pnl > 0), loss = done.filter(t => t.pnl <= 0);
+  const rs = done.filter(t => t.r != null).map(t => t.r);
+  const avg = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0;
+  const equity = P.cash + mv, realized = done.reduce((s, t) => s + t.pnl, 0);
+  return { equity, open, realized, ret: equity / P.capital - 1, trades: done.length, win: done.length ? wins.length / done.length : null, exp: rs.length ? avg(rs) : null,
+    ratio: wins.length && loss.length ? avg(wins.map(t => t.pnl)) / Math.abs(avg(loss.map(t => t.pnl))) : null, worst: rs.length ? Math.min(...rs) : null };
+}
+async function placePaper(o) {
+  await loadPaper();
+  const b = S.bars.get(o.sym); if (!b) { showToast('No data for ' + o.sym, 'err'); return false; }
+  if (!(o.qty > 0)) { showToast('Quantity must be above zero', 'err'); return false; }
+  if (o.side === 'LONG' ? !(o.stop < (o.trigger || b.c[b.c.length - 1])) : !(o.stop > (o.trigger || b.c[b.c.length - 1]))) { showToast('Stop must be on the losing side of entry (W64)', 'err'); return false; }
+  const exp = o.type === 'trigger' ? addDays(lastDate(b), o.horizon === 'intraday' || o.horizon === 'btst' ? 1 : 7) : null;
+  S.paper.orders.push({ id: S.paper.seq++, placed: lastDate(b), expires: exp, status: 'pending', ...o });
+  savePaper(); showToast(`Paper order placed: ${o.side === 'LONG' ? 'buy' : 'short'} ${o.qty} ${o.sym}`, 'ok'); return true;
+}
+function paperOrderForm(sym, x, k) {
+  const p = x && x.plan, b = S.bars.get(sym), c = b.c[b.c.length - 1];
+  const side = p && p.short ? 'SHORT' : 'LONG', trig = p ? p.entry : c;
+  return `<div class="card" id="paperCard"><h3>Paper trade · ${esc(sym)}</h3>
+    <p class="small mut">Simulated with your paper account. Fills use the next sessions' real prices: an order at "next open" fills at the next day's open; a trigger order fills only if the price trades through it.</p>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px">
+      <div><label>Side</label><select id="poSide"><option ${side === 'LONG' ? 'selected' : ''}>LONG</option><option ${side === 'SHORT' ? 'selected' : ''}>SHORT</option></select></div>
+      <div><label>Order</label><select id="poType"><option value="open">Next open</option><option value="trigger" ${p && Math.abs(trig - c) / c > 0.001 ? 'selected' : ''}>At trigger ₹${fmt(trig)}</option></select></div>
+      <div><label>Quantity</label><input type="number" id="poQty" value="${p ? p.qty : Math.max(1, Math.floor(S.opt.capital * S.opt.riskPct / 100 / Math.max(0.01, c * 0.08)))}"></div>
+      <div><label>Stop ₹</label><input type="number" step="any" id="poStop" value="${p ? p.stop : (c * 0.92).toFixed(2)}"></div>
+      <div><label>Target ₹</label><input type="number" step="any" id="poTgt" value="${p ? p.target : (c * 1.16).toFixed(2)}"></div>
+      <div><label>Horizon</label><select id="poHz">${Object.keys(PAPER_HOLD).map(h => `<option ${h === (k || 'manual') ? 'selected' : ''}>${h}</option>`).join('')}</select></div>
+    </div>
+    <div style="margin-top:8px"><button class="pri" id="poPlace">Place paper order</button></div></div>`;
+}
+function wirePaperForm(sym, x, k) {
+  const btn = $('#poPlace'); if (!btn) return;
+  btn.onclick = async () => {
+    const p = x && x.plan;
+    const ok = await placePaper({ sym, side: $('#poSide').value, type: $('#poType').value, trigger: $('#poType').value === 'trigger' ? (p ? p.entry : S.bars.get(sym).c.slice(-1)[0]) : null,
+      qty: Math.floor(+$('#poQty').value), stop: +$('#poStop').value, target: +$('#poTgt').value, horizon: $('#poHz').value, setup: x ? (x.setup || '') : 'manual' });
+    if (ok) { closeModal(); S.tab = 'paper'; render(); }
+  };
+}
+function paperView() {
+  if (!S.paper) { loadPaper().then(() => { processPaper(); render(); }); return '<div class="card mut">Loading paper account…</div>'; }
+  const P = S.paper, st = paperStats();
+  const row = (t, cells) => `<tr${t ? ` class="click" data-sym="${esc(t)}"` : ''}>${cells.join('')}</tr>`;
+  return `<div class="card"><div class="row"><h3 style="flex:3;margin:0">Paper trading</h3><span class="small mut" style="flex:2;text-align:right">Started ${P.created} with ₹${fmt(P.capital, 0)} · saved on this device</span></div>
+    <div class="kpi" style="margin-top:10px"><div><b>₹${fmt(st.equity, 0)}</b><span>equity <span class="${cls(st.ret)}">${pct(st.ret)}</span></span></div><div><b>₹${fmt(P.cash, 0)}</b><span>cash</span></div>
+    <div><b class="${cls(st.open)}">₹${fmt(st.open, 0)}</b><span>open P&amp;L</span></div><div><b class="${cls(st.realized)}">₹${fmt(st.realized, 0)}</b><span>realised P&amp;L</span></div>
+    <div><b>${st.trades}</b><span>closed trades</span></div><div><b>${st.win == null ? '–' : pct(st.win, 0)}</b><span>win rate</span></div>
+    <div><b>${st.exp == null ? '–' : fmt(st.exp) + 'R'}</b><span>expectancy / trade</span></div><div><b>${st.ratio == null ? '–' : fmt(st.ratio, 1) + '×'}</b><span>avg win ÷ avg loss (aim ≥ 2)</span></div></div>
+    ${st.worst != null && st.worst < -1.2 ? '<div class="note red" style="margin-top:8px">A loss exceeded 1.2R: price gapped through the stop. Size smaller in gappy stocks (W62).</div>' : ''}
+    <p class="small mut" style="margin-top:8px">Costs assumed ${P.cost}% per side. Exits: stop and target checked on every new daily bar (stop first if both are touched); intraday squares off the same day, BTST the next day, swing after 15 sessions, short term after 40.</p></div>
+  <div class="card"><h3>Open positions (${P.pos.length})</h3>${P.pos.length ? `<div class="tw"><table><thead><tr><th>Symbol</th><th>Side</th><th class=num>Qty</th><th class=num>Entry</th><th class=num>Last</th><th class=num>P&amp;L</th><th class=num>Stop</th><th class=num>Target</th><th>Since</th><th></th></tr></thead><tbody>
+    ${P.pos.map(p => { const m = paperMark(p); return row(p.sym, [`<td><b>${esc(p.sym)}</b><div class="small mut">${esc(p.horizon)}</div></td>`, `<td>${p.side}</td>`, `<td class=num>${p.qty}</td>`, `<td class=num>${fmt(p.entry)}</td>`, `<td class=num>${fmt(m.mark)}</td>`, `<td class="num ${cls(m.pnl)}">${fmt(m.pnl, 0)}</td>`, `<td class="num dn">${fmt(p.stop)}</td>`, `<td class="num up">${fmt(p.target)}</td>`, `<td>${p.entryDate}</td>`, `<td><button class=sm data-pclose="${p.id}">Exit at last</button></td>`]); }).join('')}</tbody></table></div>` : '<p class="mut small">None. Open a stock from any list and use <b>Paper trade</b> in its plan.</p>'}</div>
+  <div class="card"><h3>Pending orders (${P.orders.length})</h3>${P.orders.length ? `<div class="tw"><table><thead><tr><th>Symbol</th><th>Side</th><th>Order</th><th class=num>Qty</th><th class=num>Stop</th><th class=num>Target</th><th>Placed</th><th></th></tr></thead><tbody>
+    ${P.orders.map(o => row(o.sym, [`<td><b>${esc(o.sym)}</b></td>`, `<td>${o.side}</td>`, `<td>${o.type === 'open' ? 'next open' : 'trigger ₹' + fmt(o.trigger)}${o.expires ? `<div class="small mut">expires ${o.expires}</div>` : ''}</td>`, `<td class=num>${o.qty}</td>`, `<td class=num>${fmt(o.stop)}</td>`, `<td class=num>${fmt(o.target)}</td>`, `<td>${o.placed}</td>`, `<td><button class=sm data-pcancel="${o.id}">Cancel</button></td>`])).join('')}</tbody></table></div><p class="small mut">Orders fill when the next day's data arrives (after Sync).</p>` : '<p class="mut small">None.</p>'}</div>
+  <div class="card"><h3>History: closed trades &amp; expired orders (${P.closed.length})</h3>${P.closed.length ? `<div class="tw"><table><thead><tr><th>Symbol</th><th>Side</th><th class=num>Qty</th><th class=num>Entry</th><th class=num>Exit</th><th class=num>P&amp;L</th><th class=num>R</th><th>Exit reason</th><th>Dates</th></tr></thead><tbody>
+    ${P.closed.slice().reverse().map(t => row(t.sym, [`<td><b>${esc(t.sym)}</b><div class="small mut">${esc(t.horizon || '')}</div></td>`, `<td>${t.side}</td>`, `<td class=num>${t.qty}</td>`, `<td class=num>${t.entry == null ? '–' : fmt(t.entry)}</td>`, `<td class=num>${t.exit == null ? '–' : fmt(t.exit)}</td>`, `<td class="num ${cls(t.pnl)}">${t.pnl == null ? '–' : fmt(t.pnl, 0)}</td>`, `<td class="num ${cls(t.r)}">${t.r == null ? '–' : fmt(t.r)}</td>`, `<td>${esc(t.result)}</td>`, `<td class="small">${esc(t.entryDate || t.placed || '')} → ${esc(t.exitDate || '')}</td>`])).join('')}</tbody></table></div>` : '<p class="mut small">None yet.</p>'}</div>
+  <div class="card"><h3>Account</h3><div class="row" style="max-width:640px"><div><label>Starting capital ₹</label><input type="number" id="ppCap" value="${P.capital}"></div><div><label>Cost per side %</label><input type="number" step="0.01" id="ppCost" value="${P.cost}"></div></div>
+    <div class="row" style="margin-top:8px;max-width:640px"><button id="ppSave">Save cost</button><button id="ppReset">Reset account</button><button id="ppExport">Copy account backup</button></div>
+    <p class="small mut">Reset clears all paper positions and history and starts again with the capital above.</p></div>`;
+}
+function wirePaper() {
+  document.querySelectorAll('[data-pclose]').forEach(b => b.onclick = e => { e.stopPropagation(); const p = S.paper.pos.find(x => x.id === +b.dataset.pclose); if (!p) return; const m = paperMark(p); closePaper(p, m.mark, lastDate(S.bars.get(p.sym)), 'manual exit'); savePaper(); render(); });
+  document.querySelectorAll('[data-pcancel]').forEach(b => b.onclick = e => { e.stopPropagation(); S.paper.orders = S.paper.orders.filter(o => o.id !== +b.dataset.pcancel); savePaper(); render(); });
+  const sv = $('#ppSave'); if (sv) sv.onclick = () => { S.paper.cost = Math.max(0, +$('#ppCost').value || 0); savePaper(); showToast('Saved', 'ok'); render(); };
+  const rs = $('#ppReset'); if (rs) rs.onclick = () => { if (!confirm('Reset the paper account? All paper trades will be deleted.')) return; const cap = Math.max(10000, +$('#ppCap').value || 1000000); S.paper = newPaper(cap); savePaper(); render(); };
+  const ex = $('#ppExport'); if (ex) ex.onclick = () => { const t = JSON.stringify(S.paper); if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(t).then(() => showToast('Backup copied — paste it into a note', 'ok'), () => showToast('Copy blocked', 'err')); };
 }
 
 /* ======================= JOURNAL ======================= */
