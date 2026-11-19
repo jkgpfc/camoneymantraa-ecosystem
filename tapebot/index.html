@@ -190,6 +190,29 @@ const TB = (function () {
     return cols;
   }
 
+  // ---------- weekly bars (Mon-Fri) and weekly trend ----------
+  function toWeekly(b) {
+    const W = { sym: b.sym, d: [], o: [], h: [], l: [], c: [], v: [] };
+    let key = null;
+    for (let i = 0; i < b.c.length; i++) {
+      const dt = new Date(b.d[i] + 'T00:00:00Z'), dow = (dt.getUTCDay() + 6) % 7;
+      const k = new Date(dt.getTime() - dow * 864e5).toISOString().slice(0, 10);
+      if (k !== key) { key = k; W.d.push(b.d[i]); W.o.push(b.o[i]); W.h.push(b.h[i]); W.l.push(b.l[i]); W.c.push(b.c[i]); W.v.push(b.v[i]); }
+      else { const j = W.c.length - 1; W.d[j] = b.d[i]; W.h[j] = Math.max(W.h[j], b.h[i]); W.l[j] = Math.min(W.l[j], b.l[i]); W.c[j] = b.c[i]; W.v[j] += b.v[i]; }
+    }
+    return W;
+  }
+  function weeklyTrend(b) {
+    const W = toWeekly(b), n = W.c.length, t = n - 1;
+    if (n < 34) return { trend: 'unknown', weeks: n };
+    const m30 = sma(W.c, 30, t), m30p = sma(W.c, 30, t - 4), m10 = sma(W.c, 10, t);
+    const slope = (m30 - m30p) / m30p, c = W.c[t];
+    let trend = 'flat';
+    if (c > m30 && slope > 0.005 && m10 > m30) trend = 'up';
+    else if (c < m30 && slope < -0.005) trend = 'down';
+    return { trend, weeks: n, m10, m30, slope, above30: c > m30 };
+  }
+
   // ---------- trading range detection ----------
   function findRange(b, t, atrPct) {
     // Range "body" ends 6–40 bars back, so the spring / SOS / LPS that follow are not part of it.
@@ -436,6 +459,7 @@ const TB = (function () {
       const swingHi = h[maxIdx(h, t - 15, t)];
       if ((near20 || near50) && pbVol && c[t] < swingHi) R.pullback = { to: near20 ? '20DMA' : '50DMA', swingHi };
     }
+    R.wk = weeklyTrend(b);
     return R;
   }
 
@@ -651,6 +675,18 @@ const TB = (function () {
       }
     }
     function l_last(R) { return R.close - 2 * R.atr; }
+    // Triple-screen: the weekly trend must agree with the daily setup (W6/W7, five-step #1)
+    for (const k of ['intraday', 'btst', 'swing', 'short', 'medium']) {
+      out[k] = out[k].filter(x => {
+        const wt = x.R.wk ? x.R.wk.trend : 'unknown', isShort = x.side === 'SHORT';
+        const agree = isShort ? wt === 'down' : wt === 'up', against = isShort ? wt === 'up' : wt === 'down';
+        if (against && (k === 'short' || k === 'medium')) return false;      // multi-week holds must not fight the weekly trend
+        x.weekly = agree ? 'confirms' : against ? 'against' : 'neutral';
+        x.tags = [agree ? '✓ Weekly confirms' : against ? '⚠ Against weekly trend · half size' : '• Weekly neutral'].concat(x.tags || []);
+        if (agree) x.score += 8; else if (against) { x.score -= 15; x.sizeMult = 0.5; }
+        return true;
+      });
+    }
     for (const k in out) out[k].sort((a, b) => b.score - a.score);
     return out;
   }
@@ -681,6 +717,7 @@ const TB = (function () {
           const e = b.c[t]; const s = isFinite(R.sma200) ? Math.min(R.sma200 * 0.9, e * 0.8) : e * 0.8;
           p = plan(e, s, e * 1.5, opt, opt.riskPct); if (p) p.note = 'Accumulate in 3 tranches; exit on Stage 4 or fundamentals break';
         } else if (k === 'avoid') { p = null; }
+        if (p && x.sizeMult && p.qty) { p.qty = Math.floor(p.qty * x.sizeMult); p.value = Math.round(p.qty * p.entry); p.riskAmt = Math.round(p.qty * p.risk); p.note = (p.note ? p.note + ' · ' : '') + 'Half size: daily setup is against the weekly trend'; }
         x.plan = p;
         if (k === 'avoid' || (p && !x.rejected && p.qty > 0)) keep[k].push(x);
         else if (x.rejected) { x.rejectedList = true; }
@@ -725,7 +762,7 @@ const TB = (function () {
     return { results, indices: indices.filter(r => !r.insufficient), tone, lists: final, index };
   }
 
-  return { run, analyze, smaSeries, atrSeries, mapFundamentalHeaders, longTermScore, pnfColumns, niceBox, findRange, marketTone };
+  return { run, analyze, toWeekly, weeklyTrend, smaSeries, atrSeries, mapFundamentalHeaders, longTermScore, pnfColumns, niceBox, findRange, marketTone };
 })();
 
 </script>
@@ -1944,12 +1981,14 @@ function openDetail(sym, x, k) {
   const lt = f ? TB.longTermScore(f, R) : null;
   $('#mbox').innerHTML = `<div class="row"><h2 style="margin:0;flex:4">${esc(sym)} <span class="mut small">${esc(R.name || (f && f.name) || '')} · ${R.date} · ₹${fmt(R.close)} <span class="${cls(R.chg)}">${pct(R.chg)}</span></span></h2><button style="flex:0" onclick="closeModal()">Close ✕</button></div>
   ${x ? `<div class="note"><b>${esc(k ? HZ[k].title : '')}:</b> ${esc(x.setup || (x.why || []).join(', '))}</div>` : ''}
+  ${chartControls()}
   <canvas id="chart" height="300"></canvas>
   ${keyChangesHtml(sym, R)}
   <div class="grid" style="margin-top:12px">
    <div class="card"><h3>Wyckoff five-step test (W100)</h3>${fs}</div>
    <div class="card"><h3>Tape read</h3>
-     <div class=small><b>Stage:</b> ${R.stage ?? '–'} (Weinstein${R.stageBasis ? ', ' + R.stageBasis : ''})${R.stage2Early ? ' · <b class=up>early Stage 2</b>' : ''}<br>
+     <div class=small><b>Weekly trend:</b> ${R.wk ? (R.wk.trend === 'up' ? '<b class=up>Up</b> · price above a rising 30-week average' : R.wk.trend === 'down' ? '<b class=dn>Down</b> · price below a falling 30-week average' : R.wk.trend === 'flat' ? '<b class=wr>Flat</b> · no clear weekly trend' : 'Not enough weeks') : '–'}${x && x.weekly ? ` · <b>${x.weekly === 'confirms' ? '✓ confirms this setup' : x.weekly === 'against' ? '⚠ against this setup (half size)' : 'neutral for this setup'}</b>` : ''}<br>
+     <b>Stage:</b> ${R.stage ?? '–'} (Weinstein${R.stageBasis ? ', ' + R.stageBasis : ''})${R.stage2Early ? ' · <b class=up>early Stage 2</b>' : ''}<br>
      <b>Phase:</b> ${esc(R.range ? R.range.phase : 'Trending, no range')}<br>
      ${R.range ? `<b>Range:</b> ₹${fmt(R.range.lo)} – ₹${fmt(R.range.hi)} · ${R.range.L} days · ${R.range.context} · up/down volume ${fmt(R.range.udRatio)}<br><b>P&F count:</b> ₹${fmt(R.range.pnfTarget)} (box ${R.range.box}, ${R.range.cols} columns × 3)<br>` : ''}
      <b>Events:</b> ${R.events.length ? R.events.map(e => `<span class=chip>${e.txt} · ${S.bars.get(sym).d[e.i]}</span>`).join('') : 'none'}<br>
@@ -1968,15 +2007,31 @@ function openDetail(sym, x, k) {
      <div style="margin-top:8px"><button class="pri" id="btnLog" disabled>Add to journal</button> <span class="small mut">Enabled only when every box is ticked.</span></div></div>` : ''}
   </div>`;
   $('#modal').style.display = 'block'; $('#modal').scrollTop = 0;
-  drawChart($('#chart'), S.bars.get(sym), R, p);
+  drawChart($('#chart'), S.bars.get(sym), R, p); wireChartControls(sym, R, p);
   if (p) { const upd = () => $('#btnLog').disabled = ![...document.querySelectorAll('.pck')].every(c => c.checked); document.querySelectorAll('.pck').forEach(c => c.onchange = upd);
     $('#btnLog').onclick = () => { S.journal.push({ id: Date.now(), date: R.date, sym, horizon: k, side: p.short ? 'SHORT' : 'LONG', setup: $('#pwhy').value, entry: p.entry, stop: p.stop, target: p.target, qty: p.qty, exit: null, exitDate: '', followed: '', notes: '' }); DB.set('journal', S.journal); closeModal(); S.tab = 'journal'; render(); }; }
 }
 
-function drawChart(cv, b, R, p) {
+const CHART_SPANS = { D: { '3M': 63, '6M': 126, '1Y': 250, 'Max': 1e9 }, W: { '3M': 13, '6M': 26, '1Y': 52, 'Max': 1e9 } };
+function chartPrefs() { try { const p = JSON.parse(localStorage.getItem('tb_chart') || '{}'); return { tf: p.tf === 'W' ? 'W' : 'D', span: CHART_SPANS.D[p.span] ? p.span : '6M' }; } catch (e) { return { tf: 'D', span: '6M' }; } }
+function chartControls() {
+  const c = chartPrefs(), btn = (k, v, lab) => `<button class="sm${c[k] === v ? ' pri' : ''}" data-ck="${k}" data-cv="${v}">${lab}</button>`;
+  return `<div class="row" style="gap:6px;margin:6px 0;flex-wrap:wrap"><span style="flex:0;display:flex;gap:4px">${btn('tf', 'D', 'Daily')}${btn('tf', 'W', 'Weekly')}</span><span style="flex:0;display:flex;gap:4px">${['3M', '6M', '1Y', 'Max'].map(s => btn('span', s, s)).join('')}</span></div>`;
+}
+function wireChartControls(sym, R, p) {
+  document.querySelectorAll('[data-ck]').forEach(el => el.onclick = () => {
+    const c = chartPrefs(); c[el.dataset.ck] = el.dataset.cv; try { localStorage.setItem('tb_chart', JSON.stringify(c)); } catch (e) { }
+    document.querySelectorAll('[data-ck]').forEach(x => x.classList.toggle('pri', chartPrefs()[x.dataset.ck] === x.dataset.cv));
+    drawChart($('#chart'), S.bars.get(sym), R, p);
+  });
+}
+function drawChart(cv, b0, R, p) {
+  const pref = chartPrefs(), wk = pref.tf === 'W';
+  const b = wk ? TB.toWeekly(b0) : b0;
   const W = cv.clientWidth || Math.min(window.innerWidth - 28, 1000), H = window.innerWidth <= 680 ? 290 : 420, dpr = window.devicePixelRatio || 1; cv.width = W * dpr; cv.height = H * dpr; const g = cv.getContext('2d'); g.scale(dpr, dpr);
-  const n = b.c.length, N = Math.min(n, 180), s0 = n - N;
-  const s20 = TB.smaSeries(b.c, 20), s50 = TB.smaSeries(b.c, 50), s150 = TB.smaSeries(b.c, 150);
+  const n = b.c.length, N = Math.max(5, Math.min(n, CHART_SPANS[pref.tf][pref.span])), s0 = n - N;
+  const ma = wk ? [[10, '#1c6fd1', '10-wk'], [30, '#8e44ad', '30-wk (Stage)']] : [[20, '#1c6fd1', '20 DMA'], [50, '#e67e22', '50 DMA'], [150, '#8e44ad', '150 DMA (30-wk)']];
+  const series = ma.map(([k]) => TB.smaSeries(b.c, k));
   let hi = -Infinity, lo = Infinity, vmax = 0;
   for (let i = s0; i < n; i++) { hi = Math.max(hi, b.h[i]); lo = Math.min(lo, b.l[i]); vmax = Math.max(vmax, b.v[i]); }
   if (p) { hi = Math.max(hi, p.target, p.stop); lo = Math.min(lo, p.stop, p.target); }
@@ -1984,7 +2039,7 @@ function drawChart(cv, b, R, p) {
   const y = v => top + (hi - v) / (hi - lo) * (ph - top), x = i => 10 + (i - s0 + 0.5) * cw;
   g.fillStyle = '#fff'; g.fillRect(0, 0, W, H); g.font = '11px Segoe UI, Arial'; g.strokeStyle = '#eef1f4'; g.fillStyle = '#6a7a8a';
   for (let k = 0; k <= 5; k++) { const v = lo + (hi - lo) * k / 5; g.beginPath(); g.moveTo(10, y(v)); g.lineTo(W - padR, y(v)); g.stroke(); g.fillText(v.toFixed(v > 1000 ? 0 : 1), W - padR + 4, y(v) + 4); }
-  const rg = R.range;
+  const rg = wk ? null : R.range;
   if (rg && rg.e >= s0) { g.fillStyle = 'rgba(28,111,209,.07)'; const xa = x(Math.max(rg.a, s0)) - cw / 2; g.fillRect(xa, y(rg.hi), x(rg.e) - xa + cw / 2, y(rg.lo) - y(rg.hi)); g.strokeStyle = 'rgba(28,111,209,.5)'; g.setLineDash([4, 3]); [rg.hi, rg.lo].forEach(v => { g.beginPath(); g.moveTo(xa, y(v)); g.lineTo(W - padR, y(v)); g.stroke(); }); g.setLineDash([]); }
   for (let i = s0; i < n; i++) {
     const up = b.c[i] >= b.o[i]; g.strokeStyle = g.fillStyle = up ? '#0f8a4b' : '#c0392b';
@@ -1993,12 +2048,12 @@ function drawChart(cv, b, R, p) {
     g.globalAlpha = 0.45; g.fillRect(x(i) - bw / 2, H - 4 - b.v[i] / vmax * vh, bw, b.v[i] / vmax * vh); g.globalAlpha = 1;
   }
   const line = (s, c) => { g.strokeStyle = c; g.lineWidth = 1.4; g.beginPath(); let st = false; for (let i = s0; i < n; i++) { if (!isFinite(s[i])) continue; st ? g.lineTo(x(i), y(s[i])) : g.moveTo(x(i), y(s[i])); st = true; } g.stroke(); g.lineWidth = 1; };
-  line(s20, '#1c6fd1'); line(s50, '#e67e22'); line(s150, '#8e44ad');
+  series.forEach((s, k) => line(s, ma[k][1]));
   const col = { SC: '#0f8a4b', AR: '#555', ST: '#0f8a4b', SPRING: '#0f8a4b', SOS: '#0f8a4b', LPS: '#0f8a4b', NS: '#0f8a4b', BC: '#c0392b', UTAD: '#c0392b', SOW: '#c0392b', LPSY: '#c0392b', ND: '#c0392b', EvR: '#b7791f' };
   const bull = new Set(['SC', 'ST', 'SPRING', 'LPS', 'NS']);
-  for (const e of R.events) { if (e.i < s0) continue; g.fillStyle = col[e.k] || '#333'; g.font = 'bold 10px Segoe UI, Arial'; const yy = bull.has(e.k) ? y(b.l[e.i]) + 14 : y(b.h[e.i]) - 6; g.fillText(e.k, x(e.i) - 8, yy); }
-  if (p) [[p.entry, '#1c6fd1', 'Entry'], [p.stop, '#c0392b', 'Stop'], [p.target, '#0f8a4b', 'Target']].forEach(([v, c, l]) => { g.strokeStyle = c; g.setLineDash([6, 4]); g.beginPath(); g.moveTo(x(n - 30), y(v)); g.lineTo(W - padR, y(v)); g.stroke(); g.setLineDash([]); g.fillStyle = c; g.font = 'bold 10px Segoe UI, Arial'; g.fillText(l, x(n - 30) - 34, y(v) + 3); });
-  g.font = '11px Segoe UI, Arial'; [['20 DMA', '#1c6fd1'], ['50 DMA', '#e67e22'], ['150 DMA (30-wk)', '#8e44ad']].forEach(([l, c], i) => { g.fillStyle = c; g.fillText(l, 14 + i * 90, 22); });
+  for (const e of (wk ? [] : R.events)) { if (e.i < s0) continue; g.fillStyle = col[e.k] || '#333'; g.font = 'bold 10px Segoe UI, Arial'; const yy = bull.has(e.k) ? y(b.l[e.i]) + 14 : y(b.h[e.i]) - 6; g.fillText(e.k, x(e.i) - 8, yy); }
+  if (p) [[p.entry, '#1c6fd1', 'Entry'], [p.stop, '#c0392b', 'Stop'], [p.target, '#0f8a4b', 'Target']].forEach(([v, c, l]) => { g.strokeStyle = c; g.setLineDash([6, 4]); g.beginPath(); g.moveTo(x(n - Math.min(30, Math.ceil(N / 4))), y(v)); g.lineTo(W - padR, y(v)); g.stroke(); g.setLineDash([]); g.fillStyle = c; g.font = 'bold 10px Segoe UI, Arial'; g.fillText(l, x(n - Math.min(30, Math.ceil(N / 4))) - 34, y(v) + 3); });
+  g.font = '11px Segoe UI, Arial'; ma.forEach(([, c, l], i) => { g.fillStyle = c; g.fillText(l, 14 + i * 100, 22); }); g.fillStyle = '#6a7a8a'; g.fillText(wk ? 'Weekly' : 'Daily', W - padR - 44, 22);
   g.fillStyle = '#6a7a8a'; g.fillText(b.d[s0], 12, H - vh - 10); g.fillText(b.d[n - 1], W - padR - 62, H - vh - 10);
 }
 
