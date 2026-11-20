@@ -1929,7 +1929,7 @@ VIEWS.grid = () => gridView();
    (prev close → open) is now a path segment, so gap fills are handled once, at the open. */
 const GRID = { KEY: 'tb_grid_v1', running: false, res: null, prog: '' };
 function gridPrefs() { let p = {}; try { p = JSON.parse(localStorage.getItem(GRID.KEY + '_p') || '{}'); } catch (e) { }
-  p = Object.assign({ cap: 100000, step: 1, band: 20, cost: 0.3, rev: 0, start: gridPeriodStart('1y'), end: '', period: '1y', gap: false, whole: false, tickers: '' }, p);
+  p = Object.assign({ cap: 100000, step: 1, band: 20, cost: 0.1, rev: 0, brok: 20, cons: true, start: gridPeriodStart('1y'), end: '', period: '1y', gap: false, whole: false, tickers: '' }, p);
   p.src = Object.assign({ intraday: true, btst: true, swing: false, short: true, medium: true, long: true }, p.src); return p; }
 const GRID_SRC = [['intraday', 'Intraday'], ['btst', 'BTST'], ['swing', 'Swing'], ['short', 'Short term'], ['medium', 'Medium term'], ['long', 'Long term']];
 const GRID_PER = [['1y', '1 year', 1], ['3y', '3 years', 3], ['5y', '5 years', 5], ['10y', '10 years', 10], ['15y', '15 years', 15], ['max', 'Since 2001', 0], ['custom', 'Custom', -1]];
@@ -1961,15 +1961,20 @@ async function gridFetch(t, startStr, endStr, botOnly) {
     rows.src = 'Yahoo'; return rows;
   } catch (e) { if (bot && bot.length > 20) { bot.src = 'bot data (short)'; return bot; } throw e; } }
 function addDaysStr(s, n) { const d = new Date(s + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+/* Equity delivery levies (NSE): STT 0.1% buy & sell, exchange txn 0.00307%, SEBI ₹10/crore, stamp 0.015% on buy,
+   GST 18% on brokerage + txn + SEBI, DP ₹15.34 per stock per sell day. Brokerage per executed order is the user's input. */
+const GRID_FEE = { stt: 0.001, txn: 0.0000307, sebi: 0.000001, stamp: 0.00015, gst: 0.18, dp: 15.34 };
+function gridOrderCost(v, buy, P) { const F = GRID_FEE, b = +P.brok || 0; return b + F.stt * v + F.txn * v + F.sebi * v + F.gst * (b + F.txn * v + F.sebi * v) + (buy ? F.stamp * v : 0); }
 /* Same rules as simulate_() in the Sheets script, plus: overnight gap segment, optional whole shares, peak capital used. */
 function gridSim(rows, P) { if (+P.rev > 0) return gridSimRev(rows, P); const STEP = P.step / 100, BAND = P.band / 100, COST = P.cost / 100, MAX = Math.round(BAND / STEP);
-  let ref = rows[0].o, step = ref * STEP, qty = 0, day = 0, lastRe = -1, n = 0, realized = 0, trades = 0, reentries = 0, held = 0, peak = 0, lowDays = 0; const buyPx = [];
+  let ref = rows[0].o, step = ref * STEP, qty = 0, day = 0, lastRe = -1, n = 0, realized = 0, trades = 0, reentries = 0, held = 0, peak = 0, lowDays = 0, charges = 0, orders = 0, dpDay = -1; const buyPx = [], buyDay = [];
+  const fee = (v, buy) => { let c = gridOrderCost(v, buy, P); if (!buy && dpDay !== day) { c += GRID_FEE.dp; dpDay = day; } charges += c; orders++; realized -= c; };
   const size = () => { const q = P.cap / (MAX * ref * (1 - BAND / 2)); qty = P.whole ? Math.max(1, Math.floor(q)) : q; }; size();
   function fallTo(p, gapFill) { const target = Math.min(MAX, Math.floor((ref - p) / step + 1e-9));
     while (n < target) { const rung = ref - (n + 1) * step, fill = gapFill != null && gapFill < rung ? gapFill : rung;
-      realized -= COST / 2 * fill * qty; buyPx.push(fill); n++; held += fill * qty; peak = Math.max(peak, held); } }
-  function riseTo(p, gapFill) { while (n > 0 && p >= ref - (n - 1) * step - 1e-9) { const rung = ref - (n - 1) * step, sell = gapFill != null && gapFill > rung ? gapFill : rung;
-      const b = buyPx.pop(); realized += qty * (sell - b) - COST / 2 * sell * qty; held -= b * qty; n--; trades++; }
+      realized -= COST / 2 * fill * qty; fee(fill * qty, true); buyPx.push(fill); buyDay.push(day); n++; held += fill * qty; peak = Math.max(peak, held); } }
+  function riseTo(p, gapFill) { while (n > 0 && p >= ref - (n - 1) * step - 1e-9 && !(P.cons && buyDay[n - 1] === day)) { const rung = ref - (n - 1) * step, sell = gapFill != null && gapFill > rung ? gapFill : rung;
+      const b = buyPx.pop(); buyDay.pop(); realized += qty * (sell - b) - COST / 2 * sell * qty; fee(sell * qty, false); held -= b * qty; n--; trades++; }
     if (n === 0 && p > ref) { ref = p; step = ref * STEP; size(); if (lastRe !== day) { reentries++; lastRe = day; } } }
   rows.forEach((r, i) => { day = i;
     if (i > 0) { const pc = rows[i - 1].c, g = P.gap ? r.o : null;   // overnight segment: prev close → open
@@ -1978,20 +1983,21 @@ function gridSim(rows, P) { if (+P.rev > 0) return gridSimRev(rows, P); const ST
     for (let s = 1; s < path.length; s++) { if (path[s] < path[s - 1]) fallTo(path[s], null); else if (path[s] > path[s - 1]) riseTo(path[s], null); }
     if (n >= MAX && r.c < ref * (1 - BAND)) lowDays++; });
   const last = rows[rows.length - 1].c; let unreal = 0; buyPx.forEach(b => { unreal += qty * (last - b); });
-  return { realized, unreal, total: realized + unreal, bh: P.cap * (last / rows[0].o - 1), trades, reentries, from: rows[0].d, peak, rungs: n, lowDays, years: rows.length / 248 }; }
+  return { realized, unreal, total: realized + unreal, bh: P.cap * (last / rows[0].o - 1), trades, reentries, from: rows[0].d, peak, rungs: n, lowDays, years: rows.length / 248, charges, orders }; }
 /* Reversal-confirm variant: crossed rungs become "due" and execute together only after price reverses by
    P.rev steps — buys from the running low, sells from the running high. A rung is due for sale once price is
    one step above its buy price; it is sold only if the exit is above its buy price. */
 function gridSimRev(rows, P) { const STEP = P.step / 100, BAND = P.band / 100, COST = P.cost / 100, MAX = Math.round(BAND / STEP);
-  let ref = rows[0].o, step = ref * STEP, qty = 0, day = 0, lastRe = -1, realized = 0, trades = 0, reentries = 0, held = 0, peak = 0, lowDays = 0, buys = 0, sells = 0;
+  let ref = rows[0].o, step = ref * STEP, qty = 0, day = 0, lastRe = -1, realized = 0, trades = 0, reentries = 0, held = 0, peak = 0, lowDays = 0, buys = 0, sells = 0, charges = 0, orders = 0, dpDay = -1, boughtToday = false, soldToday = false;
+  const fee = (v, buy) => { let c = gridOrderCost(v, buy, P); if (!buy && dpDay !== day) { c += GRID_FEE.dp; dpDay = day; } charges += c; orders++; realized -= c; };
   const rungs = []; let lo = ref, hi = ref, last = ref;
   const size = () => { const q = P.cap / (MAX * ref * (1 - BAND / 2)); qty = P.whole ? Math.max(1, Math.floor(q)) : q; }; size();
   const R = () => P.rev * step;
   const dueBuy = () => Math.max(0, Math.min(MAX, Math.floor((ref - lo) / step + 1e-9)) - rungs.length);
-  const dueSell = () => rungs.filter(r => hi >= r.px + step - 1e-9);
-  function buyAll(px) { const k = dueBuy(); for (let j = 0; j < k; j++) { rungs.push({ px, q: qty }); realized -= COST / 2 * px * qty; held += px * qty; } peak = Math.max(peak, held); buys++; lo = px; hi = px; }
-  function sellAll(px) { let sold = 0; for (let j = rungs.length - 1; j >= 0; j--) { const r = rungs[j]; if (hi >= r.px + step - 1e-9 && px > r.px) { realized += r.q * (px - r.px) - COST / 2 * px * r.q; held -= r.px * r.q; rungs.splice(j, 1); trades++; sold++; } }
-    if (sold) sells++; hi = px; lo = Math.min(lo, px); }
+  const dueSell = () => rungs.filter(r => hi >= r.px + step - 1e-9 && !(P.cons && r.day === day));
+  function buyAll(px) { const k = dueBuy(); for (let j = 0; j < k; j++) { rungs.push({ px, q: qty, day }); realized -= COST / 2 * px * qty; held += px * qty; } if (k) fee(px * qty * k, true); peak = Math.max(peak, held); buys++; boughtToday = true; lo = px; hi = px; }
+  function sellAll(px) { let sold = 0, val = 0; for (let j = rungs.length - 1; j >= 0; j--) { const r = rungs[j]; if (hi >= r.px + step - 1e-9 && px > r.px && !(P.cons && r.day === day)) { realized += r.q * (px - r.px) - COST / 2 * px * r.q; val += px * r.q; held -= r.px * r.q; rungs.splice(j, 1); trades++; sold++; } }
+    if (sold) { sells++; soldToday = true; fee(val, false); } hi = px; lo = Math.min(lo, px); }
   function reanchor(p) { if (!rungs.length && dueBuy() === 0 && p > ref) { ref = p; step = ref * STEP; size(); lo = p; hi = p; if (lastRe !== day) { reentries++; lastRe = day; } } }
   function move(a, b, gap) {   // walk a -> b in small ticks; triggers fire at their exact price (or at b for an overnight gap fill)
     if (a === b) return; const n = Math.max(1, Math.ceil(Math.abs(b - a) / (step / 8))), d = (b - a) / n;
@@ -2000,13 +2006,15 @@ function gridSimRev(rows, P) { const STEP = P.step / 100, BAND = P.band / 100, C
         lo = Math.min(lo, y); if (!dueSell().length) hi = y; }
       else { const t = lo + R(); if (dueBuy() > 0 && y >= t - 1e-9 && x < t + 1e-9) buyAll(gap ? b : t);
         hi = Math.max(hi, y); if (dueBuy() === 0) lo = y; reanchor(y); } } }
-  rows.forEach((r, i) => { day = i;
-    if (i > 0) move(rows[i - 1].c, r.o, P.gap);
-    const path = r.c >= r.o ? [r.o, r.l, r.h, r.c] : [r.o, r.h, r.l, r.c];
-    for (let s = 1; s < path.length; s++) move(path[s - 1], path[s], false);
+  rows.forEach((r, i) => { day = i; boughtToday = soldToday = false;
+    if (P.cons) { if (i > 0) move(rows[i - 1].c, r.c, true); }   // conservative: decide and fill on closes only (intraday order unknown)
+    else { if (i > 0) move(rows[i - 1].c, r.o, P.gap);
+      const path = r.c >= r.o ? [r.o, r.l, r.h, r.c] : [r.o, r.h, r.l, r.c];
+      for (let s = 1; s < path.length; s++) move(path[s - 1], path[s], false); }
+    if (P.cons) { if (boughtToday) hi = r.c; if (soldToday) lo = Math.max(lo, r.c); }   // the day's extremes after a fill are not used: their order is unknown
     if (rungs.length >= MAX && r.c < ref * (1 - BAND)) lowDays++; last = r.c; });
   let unreal = 0; rungs.forEach(r => { unreal += r.q * (last - r.px); });
-  return { realized, unreal, total: realized + unreal, bh: P.cap * (last / rows[0].o - 1), trades, reentries, from: rows[0].d, peak, rungs: rungs.length, lowDays, years: rows.length / 248, buys, sells }; }
+  return { realized, unreal, total: realized + unreal, bh: P.cap * (last / rows[0].o - 1), trades, reentries, from: rows[0].d, peak, rungs: rungs.length, lowDays, years: rows.length / 248, buys, sells, charges, orders }; }
 function gridSorted(rows) { const k = GRID.sort || 'in'; if (k === 'in') return rows; const val = r => r.err ? -Infinity : k === 'total' ? r.total : k === 'eff' ? (r.peak > 0 ? r.total / r.peak : -Infinity) : k === 'vsbh' ? r.total - r.bh : -r.total;
   return rows.slice().sort((a, b) => val(b) - val(a)); }
 async function gridRun() { if (GRID.running) return; const P = gridPrefs(), list = gridTickList(P.tickers).slice(0, 5000), botOnly = list.length > 300;
@@ -2031,12 +2039,14 @@ function gridView() { const P = gridPrefs(); if (!GRID.res) { try { GRID.res = J
       <label>Capital per stock ₹<input id="grCap" type="number" value="${P.cap}"></label>
       <label>Step % of Ref<input id="grStep" type="number" step="0.1" value="${P.step}"></label>
       <label>Band % (lower limit)<input id="grBand" type="number" step="1" value="${P.band}"></label>
-      <label>Round-trip cost %<input id="grCost" type="number" step="0.01" value="${P.cost}"></label>
+      <label>Slippage % (round trip)<input id="grCost" type="number" step="0.01" value="${P.cost}"></label>
+      <label>Brokerage ₹ / order<input id="grBrok" type="number" step="1" value="${P.brok}"></label>
       <label>Reversal confirm (steps, 0 = off)<input id="grRev" type="number" min="0" step="0.5" value="${P.rev}"></label>
       <label>Backtest period<select id="grPer">${GRID_PER.map(([k, l]) => `<option value="${k}" ${k === P.period ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <label>From<input id="grStart" type="date" value="${esc(P.start)}"></label>
       <label>To (blank = today)<input id="grEnd" type="date" value="${esc(P.end)}"></label>
       <label style="flex-direction:row;align-items:center;gap:6px"><input id="grGap" type="checkbox" ${P.gap ? 'checked' : ''}> Gap fills at open</label>
+      <label style="flex-direction:row;align-items:center;gap:6px"><input id="grCons" type="checkbox" ${P.cons ? 'checked' : ''}> Conservative day path</label>
       <label style="flex-direction:row;align-items:center;gap:6px"><input id="grWhole" type="checkbox" ${P.whole ? 'checked' : ''}> Whole shares only</label>
     </div></div>
   <div class="card"><h3>Stocks to test · ${gridTickList(P.tickers).length}</h3>
@@ -2048,26 +2058,26 @@ function gridView() { const P = gridPrefs(); if (!GRID.res) { try { GRID.res = J
     <div class="grid" style="margin-top:8px">
       <label style="grid-column:1/-1">Ticker list (edit freely; up to 300 use Yahoo for long periods; above 300 use the bot's ~15 months of data only)<textarea id="grTick" rows="4" style="font-family:ui-monospace,monospace">${esc(P.tickers)}</textarea></label>
     </div>
-    <p class="small mut" style="margin:6px 0 0">Period ${esc(P.start)} → ${esc(P.end || 'today')}. Max rungs = band ÷ step = ${Math.round(P.band / P.step)}. Qty per rung = capital ÷ (rungs × Ref × (1 − band/2)). Re-anchors Ref when flat and price is above Ref.${+P.rev > 0 ? ` <b>Reversal confirm ${P.rev} step(s):</b> rungs crossed on the way down are held as due and bought together only after price bounces ${P.rev} step(s) off its low; rungs one step in profit are sold together only after price drops ${P.rev} step(s) from its high (never below their buy price).` : ''}</p>
+    <p class="small mut" style="margin:6px 0 0">Period ${esc(P.start)} → ${esc(P.end || 'today')}. Max rungs = band ÷ step = ${Math.round(P.band / P.step)}. Qty per rung = capital ÷ (rungs × Ref × (1 − band/2)). Re-anchors Ref when flat and price is above Ref. Charges per order: brokerage ₹${P.brok} + STT 0.1% buy & sell + NSE 0.00307% + SEBI 0.0001% + stamp 0.015% (buy) + 18% GST, and DP ₹15.34 per sell day.${P.cons ? ' <b>Conservative:</b> no same-day buy-and-sell of a rung; reversal mode decides and fills on daily closes only.' : ' <b>Optimistic path:</b> assumes low-before-high on green days — results will be inflated.'}${+P.rev > 0 ? ` <b>Reversal confirm ${P.rev} step(s):</b> rungs crossed on the way down are held as due and bought together only after price bounces ${P.rev} step(s) off its low; rungs one step in profit are sold together only after price drops ${P.rev} step(s) from its high (never below their buy price).` : ''}</p>
     <div class="row" style="margin-top:10px;gap:8px"><button class="pri" id="grRun" style="flex:1 1 auto" ${GRID.running ? 'disabled' : ''}>${GRID.running ? `Running… ${GRID.prog}` : 'Run backtest'}</button>
       <button id="grCsv" style="flex:1 1 auto" ${R && ok.length ? '' : 'disabled'}>Export CSV</button></div></div>
   ${R ? `<div class="card"><h3 style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">Results · ${ok.length} stocks · reversal ${+R.P.rev > 0 ? R.P.rev + ' step(s)' : 'off'} · ${esc(R.P.start)} → ${esc(R.P.end || 'today')} · run ${esc(R.at)} <select id="grSort" style="width:auto;margin-left:auto;font-weight:400">${[['in', 'Input order'], ['total', 'Total ₹ (high→low)'], ['eff', 'Total ÷ peak capital'], ['vsbh', 'Ladder minus B&H'], ['worst', 'Total ₹ (low→high)']].map(([k, l]) => `<option value="${k}" ${GRID.sort === k ? 'selected' : ''}>${l}</option>`).join('')}</select></h3>
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px">
-      ${[['Realized ₹', sum('realized')], ['Unrealized MTM ₹', sum('unreal')], ['Total P&amp;L ₹', sum('total')], ['Buy & hold P&amp;L ₹', sum('bh')]].map(([a, v]) => `<div class="card" style="margin:0;padding:10px"><div class="mut small">${a}</div><div style="font-size:17px;font-weight:600" class="${c(v)}">${n0(v)}</div></div>`).join('')}
+      ${[['Charges ₹ (incl. brokerage)', -sum('charges')], ['Realized ₹ (net of charges)', sum('realized')], ['Unrealized MTM ₹', sum('unreal')], ['Total P&amp;L ₹', sum('total')], ['Buy & hold P&amp;L ₹', sum('bh')]].map(([a, v]) => `<div class="card" style="margin:0;padding:10px"><div class="mut small">${a}</div><div style="font-size:17px;font-weight:600" class="${c(v)}">${n0(v)}</div></div>`).join('')}
       <div class="card" style="margin:0;padding:10px"><div class="mut small">Ladder beat B&amp;H</div><div style="font-size:17px;font-weight:600">${ok.filter(r => r.total > r.bh).length} / ${ok.length}</div></div>
       <div class="card" style="margin:0;padding:10px"><div class="mut small">Stuck at full band now</div><div style="font-size:17px;font-weight:600">${ok.filter(r => r.rungs >= Math.round(R.P.band / R.P.step)).length}</div></div>
     </div>
-    <div class="tw" style="margin-top:10px"><table><thead><tr><th>Ticker</th><th class="num">Realized ₹</th><th class="num">Unrealized ₹</th><th class="num">Total ₹</th><th class="num">B&amp;H ₹</th><th class="num">Round-trips</th><th class="num">Re-entries</th><th class="num">Peak capital used ₹</th><th class="num">Rungs held now</th><th class="num">Days below band</th><th>Data from</th></tr></thead><tbody>
-    ${gridSorted(R.rows).map(r => r.err ? `<tr><td><b>${esc(r.t)}</b></td><td colspan="10" class="dn">${esc(r.err)}</td></tr>` : `<tr><td><b>${esc(r.t)}</b></td><td class="num ${c(r.realized)}">${n0(r.realized)}</td><td class="num ${c(r.unreal)}">${n0(r.unreal)}</td><td class="num ${c(r.total)}"><b>${n0(r.total)}</b></td><td class="num ${c(r.bh)}">${n0(r.bh)}</td><td class="num">${r.trades}</td><td class="num">${r.reentries}</td><td class="num">${n0(r.peak)}</td><td class="num">${r.rungs}</td><td class="num">${r.lowDays}</td><td>${r.from}<div class="small mut">${esc(r.src || '')}</div></td></tr>`).join('')}
-    <tr><td><b>TOTAL</b></td><td class="num"><b>${n0(sum('realized'))}</b></td><td class="num"><b>${n0(sum('unreal'))}</b></td><td class="num"><b>${n0(sum('total'))}</b></td><td class="num"><b>${n0(sum('bh'))}</b></td><td class="num">${sum('trades')}</td><td class="num">${sum('reentries')}</td><td colspan="4"></td></tr>
+    <div class="tw" style="margin-top:10px"><table><thead><tr><th>Ticker</th><th class="num">Realized ₹</th><th class="num">Unrealized ₹</th><th class="num">Total ₹</th><th class="num">Charges ₹</th><th class="num">Total ÷ peak</th><th class="num">B&amp;H ₹</th><th class="num">Round-trips</th><th class="num">Re-entries</th><th class="num">Peak capital used ₹</th><th class="num">Rungs held now</th><th class="num">Days below band</th><th>Data from</th></tr></thead><tbody>
+    ${gridSorted(R.rows).map(r => r.err ? `<tr><td><b>${esc(r.t)}</b></td><td colspan="12" class="dn">${esc(r.err)}</td></tr>` : `<tr><td><b>${esc(r.t)}</b></td><td class="num ${c(r.realized)}">${n0(r.realized)}</td><td class="num ${c(r.unreal)}">${n0(r.unreal)}</td><td class="num ${c(r.total)}"><b>${n0(r.total)}</b></td><td class="num dn">${n0(r.charges || 0)}</td><td class="num ${c(r.total)}">${r.peak > 0 ? fmt(100 * r.total / r.peak, 1) + '%' : '–'}</td><td class="num ${c(r.bh)}">${n0(r.bh)}</td><td class="num">${r.trades}</td><td class="num">${r.reentries}</td><td class="num">${n0(r.peak)}</td><td class="num">${r.rungs}</td><td class="num">${r.lowDays}</td><td>${r.from}<div class="small mut">${esc(r.src || '')}</div></td></tr>`).join('')}
+    <tr><td><b>TOTAL</b></td><td class="num"><b>${n0(sum('realized'))}</b></td><td class="num"><b>${n0(sum('unreal'))}</b></td><td class="num"><b>${n0(sum('total'))}</b></td><td class="num dn"><b>${n0(sum('charges'))}</b></td><td class="num"><b>${sum('peak') > 0 ? fmt(100 * sum('total') / sum('peak'), 1) + '%' : '–'}</b></td><td class="num"><b>${n0(sum('bh'))}</b></td><td class="num">${sum('trades')}</td><td class="num">${sum('reentries')}</td><td colspan="4"></td></tr>
     </tbody></table></div>
     <p class="small mut">B&amp;H invests the full capital on day 1; the ladder holds cash until rungs fill, so compare Total against Peak capital used, not just against B&amp;H.</p></div>` : ''}`; }
 function wireGrid() {
-  const save = () => { const p = { cap: +$('#grCap').value || 100000, step: Math.max(0.1, +$('#grStep').value || 1), band: Math.max(1, +$('#grBand').value || 20), cost: Math.max(0, +$('#grCost').value), rev: Math.max(0, +$('#grRev').value || 0),
+  const save = () => { const p = { cap: +$('#grCap').value || 100000, step: Math.max(0.1, +$('#grStep').value || 1), band: Math.max(1, +$('#grBand').value || 20), cost: Math.max(0, +$('#grCost').value), brok: Math.max(0, +$('#grBrok').value || 0), cons: $('#grCons').checked, rev: Math.max(0, +$('#grRev').value || 0),
       start: $('#grStart').value || '2001-07-01', end: $('#grEnd').value || '', period: $('#grPer').value, gap: $('#grGap').checked, whole: $('#grWhole').checked, tickers: $('#grTick').value,
       src: Object.fromEntries([...document.querySelectorAll('[data-grsrc]')].map(el => [el.dataset.grsrc, el.checked])) };
     if (p.end && p.end < p.start) { showToast('"To" date is before "From" date', 'err'); p.end = ''; } gridSavePrefs(p); return p; };
-  ['#grCap', '#grStep', '#grBand', '#grCost', '#grRev', '#grGap', '#grWhole', '#grTick'].forEach(id => $(id).onchange = save);
+  ['#grCap', '#grStep', '#grBand', '#grCost', '#grBrok', '#grCons', '#grRev', '#grGap', '#grWhole', '#grTick'].forEach(id => $(id).onchange = save);
   document.querySelectorAll('[data-grsrc]').forEach(el => el.onchange = save);
   $('#grPer').onchange = () => { const s = gridPeriodStart($('#grPer').value); if (s) { $('#grStart').value = s; $('#grEnd').value = ''; } save(); render(); };
   ['#grStart', '#grEnd'].forEach(id => $(id).onchange = () => { $('#grPer').value = 'custom'; save(); render(); });
@@ -2080,8 +2090,8 @@ function wireGrid() {
   const gs = $('#grSort'); if (gs) gs.onchange = () => { GRID.sort = gs.value; render(); };
   $('#grClear').onclick = () => { const p = save(); p.tickers = ''; gridSavePrefs(p); render(); };
   $('#grRun').onclick = () => { save(); gridRun(); };
-  $('#grCsv').onclick = () => { const R = GRID.res; if (!R) return; const h = ['Ticker', 'Realized', 'Unrealized', 'Total', 'BH', 'RoundTrips', 'ReEntries', 'PeakCapital', 'RungsHeld', 'DaysBelowBand', 'DataFrom'];
-    const lines = [h.join(',')].concat(R.rows.map(r => r.err ? [r.t, r.err].join(',') : [r.t, r.realized, r.unreal, r.total, r.bh, r.trades, r.reentries, r.peak, r.rungs, r.lowDays, r.from].map(x => typeof x === 'number' ? Math.round(x) : x).join(',')));
+  $('#grCsv').onclick = () => { const R = GRID.res; if (!R) return; const h = ['Ticker', 'Realized', 'Unrealized', 'Total', 'Charges', 'Orders', 'BH', 'RoundTrips', 'ReEntries', 'PeakCapital', 'RungsHeld', 'DaysBelowBand', 'DataFrom'];
+    const lines = [h.join(',')].concat(R.rows.map(r => r.err ? [r.t, r.err].join(',') : [r.t, r.realized, r.unreal, r.total, r.charges || 0, r.orders || 0, r.bh, r.trades, r.reentries, r.peak, r.rungs, r.lowDays, r.from].map(x => typeof x === 'number' ? Math.round(x) : x).join(',')));
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv' })); a.download = 'grid_ladder_backtest.csv'; a.click(); };
 }
 /* ======================= ALGO TEST — ORB-Trail v1.2 (paper only, NSE index options + MCX commodity options) =======================
