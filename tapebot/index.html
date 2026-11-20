@@ -1980,7 +1980,7 @@ function wirePsu() {
    (prev close → open) is now a path segment, so gap fills are handled once, at the open. */
 const GRID = { KEY: 'tb_grid_v1', running: false, res: null, prog: '' };
 function gridPrefs() { let p = {}; try { p = JSON.parse(localStorage.getItem(GRID.KEY + '_p') || '{}'); } catch (e) { }
-  p = Object.assign({ cap: 100000, step: 1, band: 20, cost: 0.1, rev: 0, brok: 20, cons: true, start: gridPeriodStart('1y'), end: '', period: '1y', gap: false, whole: false, tickers: '' }, p);
+  p = Object.assign({ cap: 100000, step: 1, band: 20, cost: 0.1, rev: 0, brok: 20, cons: true, tf: 'd', start: gridPeriodStart('1y'), end: '', period: '1y', gap: false, whole: false, tickers: '' }, p);
   p.src = Object.assign({ intraday: true, btst: true, swing: false, short: true, medium: true, long: true }, p.src); return p; }
 const GRID_SRC = [['intraday', 'Intraday'], ['btst', 'BTST'], ['swing', 'Swing'], ['short', 'Short term'], ['medium', 'Medium term'], ['long', 'Long term']];
 const GRID_PER = [['1y', '1 year', 1], ['3y', '3 years', 3], ['5y', '5 years', 5], ['10y', '10 years', 10], ['15y', '15 years', 15], ['max', 'Since 2001', 0], ['custom', 'Custom', -1]];
@@ -2000,7 +2000,17 @@ function gridBotRows(t, startStr, endStr) { if (typeof S === 'undefined' || !S.b
 function gridRange(startStr) { const yrs = (Date.now() - Date.parse(startStr + 'T00:00:00Z')) / (365.25 * 864e5);
   return yrs <= 0.95 ? '1y' : yrs <= 1.95 ? '2y' : yrs <= 4.95 ? '5y' : yrs <= 9.95 ? '10y' : 'max'; }
 function gridBotStocks() { if (!S.bars) return []; const out = []; for (const [k, b] of S.bars) { if (/[:^=]/.test(k) || /^(IDX|MCX|GLB)$/.test(b.series || '') || !b.d || b.d.length < 20) continue; out.push(k); } return out.sort(); }
-async function gridFetch(t, startStr, endStr, botOnly) {
+/* Intraday bars (5-min for 60 days, 1-min for 7 days) built nightly by the GitHub Action into intraday.json.gz. */
+async function gridIntraLoad() { if (GRID.intra) return GRID.intra;
+  const base = ((S.autoCfg && S.autoCfg.cloudUrl) || CLOUD_DEFAULT).replace(/\/?$/, '/');
+  const r = await fetch(base + 'intraday.json.gz?t=' + Date.now(), { cache: 'no-store' }); if (!r.ok) throw new Error('intraday data not published yet (HTTP ' + r.status + ')');
+  const buf = new Uint8Array(await r.arrayBuffer());
+  const txt = (buf[0] === 0x1f && buf[1] === 0x8b) ? await new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip'))).text() : new TextDecoder().decode(buf);
+  GRID.intra = JSON.parse(txt); return GRID.intra; }
+function gridIntraRows(t, tf) { const k = String(t).trim().toUpperCase().replace(/^NSE:/, ''), a = GRID.intra && GRID.intra.tf[tf] && GRID.intra.tf[tf][k]; if (!a) return null;
+  return a.map(([m, o, h, l, c]) => ({ d: new Date((m * 60 + 19800) * 1000).toISOString().slice(0, 10), o, h, l, c })); }
+async function gridFetch(t, startStr, endStr, botOnly, tf) {
+  if (tf && tf !== 'd') { const rows = gridIntraRows(t, tf); if (!rows) throw new Error('NOINTRA'); rows.src = tf === '5m' ? '5-min bars' : '1-min bars'; return rows; }
   const bot = gridBotRows(t, startStr, endStr);
   if (botOnly) { if (bot && bot.length > 20) { bot.src = bot.first <= addDaysStr(startStr, 7) ? 'bot data' : 'bot data (short)'; return bot; } throw new Error('BOTONLY'); }
   if (bot && bot.length && bot.first <= addDaysStr(startStr, 7)) { bot.src = 'bot data'; return bot; }
@@ -2015,24 +2025,28 @@ function addDaysStr(s, n) { const d = new Date(s + 'T00:00:00Z'); d.setUTCDate(d
 /* Equity delivery levies (NSE): STT 0.1% buy & sell, exchange txn 0.00307%, SEBI ₹10/crore, stamp 0.015% on buy,
    GST 18% on brokerage + txn + SEBI, DP ₹15.34 per stock per sell day. Brokerage per executed order is the user's input. */
 const GRID_FEE = { stt: 0.001, txn: 0.0000307, sebi: 0.000001, stamp: 0.00015, gst: 0.18, dp: 15.34 };
+/* Intraday (bought and sold the same day): brokerage 0.03% or the per-order fee, whichever is lower; STT 0.025% sell; stamp 0.003% buy. */
+function gridIntraCost(v, buy, P) { const F = GRID_FEE, b = Math.min(+P.brok || 0, 0.0003 * v); return b + (buy ? 0 : 0.00025 * v) + F.txn * v + F.sebi * v + F.gst * (b + F.txn * v + F.sebi * v) + (buy ? 0.00003 * v : 0); }
 function gridOrderCost(v, buy, P) { const F = GRID_FEE, b = +P.brok || 0; return b + F.stt * v + F.txn * v + F.sebi * v + F.gst * (b + F.txn * v + F.sebi * v) + (buy ? F.stamp * v : 0); }
 /* Same rules as simulate_() in the Sheets script, plus: overnight gap segment, optional whole shares, peak capital used. */
 function gridSim(rows, P) { if (+P.rev > 0) return gridSimRev(rows, P); const STEP = P.step / 100, BAND = P.band / 100, COST = P.cost / 100, MAX = Math.round(BAND / STEP);
   let ref = rows[0].o, step = ref * STEP, qty = 0, day = 0, lastRe = -1, n = 0, realized = 0, trades = 0, reentries = 0, held = 0, peak = 0, lowDays = 0, charges = 0, orders = 0, dpDay = -1; const buyPx = [], buyDay = [];
-  const fee = (v, buy) => { let c = gridOrderCost(v, buy, P); if (!buy && dpDay !== day) { c += GRID_FEE.dp; dpDay = day; } charges += c; orders++; realized -= c; };
+  let cal = rows[0].d, lastCal = '', calDays = 0; const buyCal = [];
+  const fee = (v, buy) => { const c = gridOrderCost(v, buy, P); charges += c; orders++; realized -= c; };
+  const sellFee = (vSell, vBuy, sameDay) => { let c; if (sameDay) c = gridIntraCost(vSell, false, P) + gridIntraCost(vBuy, true, P) - gridOrderCost(vBuy, true, P); else { c = gridOrderCost(vSell, false, P); if (dpDay !== cal) { c += GRID_FEE.dp; dpDay = cal; } } charges += c; orders++; realized -= c; };
   const size = () => { const q = P.cap / (MAX * ref * (1 - BAND / 2)); qty = P.whole ? Math.max(1, Math.floor(q)) : q; }; size();
   function fallTo(p, gapFill) { const target = Math.min(MAX, Math.floor((ref - p) / step + 1e-9));
     while (n < target) { const rung = ref - (n + 1) * step, fill = gapFill != null && gapFill < rung ? gapFill : rung;
-      realized -= COST / 2 * fill * qty; fee(fill * qty, true); buyPx.push(fill); buyDay.push(day); n++; held += fill * qty; peak = Math.max(peak, held); } }
+      realized -= COST / 2 * fill * qty; fee(fill * qty, true); buyPx.push(fill); buyDay.push(day); buyCal.push(cal); n++; held += fill * qty; peak = Math.max(peak, held); } }
   function riseTo(p, gapFill) { while (n > 0 && p >= ref - (n - 1) * step - 1e-9 && !(P.cons && buyDay[n - 1] === day)) { const rung = ref - (n - 1) * step, sell = gapFill != null && gapFill > rung ? gapFill : rung;
-      const b = buyPx.pop(); buyDay.pop(); realized += qty * (sell - b) - COST / 2 * sell * qty; fee(sell * qty, false); held -= b * qty; n--; trades++; }
+      const b = buyPx.pop(); buyDay.pop(); const bc = buyCal.pop(); realized += qty * (sell - b) - COST / 2 * sell * qty; sellFee(sell * qty, b * qty, bc === cal); held -= b * qty; n--; trades++; }
     if (n === 0 && p > ref) { ref = p; step = ref * STEP; size(); if (lastRe !== day) { reentries++; lastRe = day; } } }
-  rows.forEach((r, i) => { day = i;
+  rows.forEach((r, i) => { day = i; cal = r.d; if (cal !== lastCal) { lastCal = cal; calDays++; }
     if (i > 0) { const pc = rows[i - 1].c, g = P.gap ? r.o : null;   // overnight segment: prev close → open
       if (r.o < pc) fallTo(r.o, g); else if (r.o > pc) riseTo(r.o, g); }
     const path = r.c >= r.o ? [r.o, r.l, r.h, r.c] : [r.o, r.h, r.l, r.c];
     for (let s = 1; s < path.length; s++) { if (path[s] < path[s - 1]) fallTo(path[s], null); else if (path[s] > path[s - 1]) riseTo(path[s], null); }
-    if (n >= MAX && r.c < ref * (1 - BAND)) lowDays++; });
+    if (n >= MAX && r.c < ref * (1 - BAND) && (i === rows.length - 1 || rows[i + 1].d !== cal)) lowDays++; });
   const last = rows[rows.length - 1].c; let unreal = 0; buyPx.forEach(b => { unreal += qty * (last - b); });
   return { realized, unreal, total: realized + unreal, bh: P.cap * (last / rows[0].o - 1), trades, reentries, from: rows[0].d, peak, rungs: n, lowDays, years: rows.length / 248, charges, orders }; }
 /* Reversal-confirm variant: crossed rungs become "due" and execute together only after price reverses by
@@ -2040,15 +2054,20 @@ function gridSim(rows, P) { if (+P.rev > 0) return gridSimRev(rows, P); const ST
    one step above its buy price; it is sold only if the exit is above its buy price. */
 function gridSimRev(rows, P) { const STEP = P.step / 100, BAND = P.band / 100, COST = P.cost / 100, MAX = Math.round(BAND / STEP);
   let ref = rows[0].o, step = ref * STEP, qty = 0, day = 0, lastRe = -1, realized = 0, trades = 0, reentries = 0, held = 0, peak = 0, lowDays = 0, buys = 0, sells = 0, charges = 0, orders = 0, dpDay = -1, boughtToday = false, soldToday = false;
-  const fee = (v, buy) => { let c = gridOrderCost(v, buy, P); if (!buy && dpDay !== day) { c += GRID_FEE.dp; dpDay = day; } charges += c; orders++; realized -= c; };
+  let cal = rows[0].d;
+  const fee = (v, buy) => { const c = gridOrderCost(v, buy, P); charges += c; orders++; realized -= c; };
+  const sellFee = (vSell, vBuyToday, vBuyOld) => { let c = 0; const tot = vSell, fToday = (vBuyToday + vBuyOld) ? vBuyToday / (vBuyToday + vBuyOld) : 0;
+    if (vBuyToday) c += gridIntraCost(tot * fToday, false, P) + gridIntraCost(vBuyToday, true, P) - gridOrderCost(vBuyToday, true, P);
+    if (vBuyOld) { c += gridOrderCost(tot * (1 - fToday), false, P); if (dpDay !== cal) { c += GRID_FEE.dp; dpDay = cal; } }
+    charges += c; orders++; realized -= c; };
   const rungs = []; let lo = ref, hi = ref, last = ref;
   const size = () => { const q = P.cap / (MAX * ref * (1 - BAND / 2)); qty = P.whole ? Math.max(1, Math.floor(q)) : q; }; size();
   const R = () => P.rev * step;
   const dueBuy = () => Math.max(0, Math.min(MAX, Math.floor((ref - lo) / step + 1e-9)) - rungs.length);
   const dueSell = () => rungs.filter(r => hi >= r.px + step - 1e-9 && !(P.cons && r.day === day));
-  function buyAll(px) { const k = dueBuy(); for (let j = 0; j < k; j++) { rungs.push({ px, q: qty, day }); realized -= COST / 2 * px * qty; held += px * qty; } if (k) fee(px * qty * k, true); peak = Math.max(peak, held); buys++; boughtToday = true; lo = px; hi = px; }
-  function sellAll(px) { let sold = 0, val = 0; for (let j = rungs.length - 1; j >= 0; j--) { const r = rungs[j]; if (hi >= r.px + step - 1e-9 && px > r.px && !(P.cons && r.day === day)) { realized += r.q * (px - r.px) - COST / 2 * px * r.q; val += px * r.q; held -= r.px * r.q; rungs.splice(j, 1); trades++; sold++; } }
-    if (sold) { sells++; soldToday = true; fee(val, false); } hi = px; lo = Math.min(lo, px); }
+  function buyAll(px) { const k = dueBuy(); for (let j = 0; j < k; j++) { rungs.push({ px, q: qty, day, cal }); realized -= COST / 2 * px * qty; held += px * qty; } if (k) fee(px * qty * k, true); peak = Math.max(peak, held); buys++; boughtToday = true; lo = px; hi = px; }
+  function sellAll(px) { let sold = 0, val = 0, bT = 0, bO = 0; for (let j = rungs.length - 1; j >= 0; j--) { const r = rungs[j]; if (hi >= r.px + step - 1e-9 && px > r.px && !(P.cons && r.day === day)) { realized += r.q * (px - r.px) - COST / 2 * px * r.q; val += px * r.q; if (r.cal === cal) bT += r.px * r.q; else bO += r.px * r.q; held -= r.px * r.q; rungs.splice(j, 1); trades++; sold++; } }
+    if (sold) { sells++; soldToday = true; sellFee(val, bT, bO); } hi = px; lo = Math.min(lo, px); }
   function reanchor(p) { if (!rungs.length && dueBuy() === 0 && p > ref) { ref = p; step = ref * STEP; size(); lo = p; hi = p; if (lastRe !== day) { reentries++; lastRe = day; } } }
   function move(a, b, gap) {   // walk a -> b in small ticks; triggers fire at their exact price (or at b for an overnight gap fill)
     if (a === b) return; const n = Math.max(1, Math.ceil(Math.abs(b - a) / (step / 8))), d = (b - a) / n;
@@ -2057,24 +2076,25 @@ function gridSimRev(rows, P) { const STEP = P.step / 100, BAND = P.band / 100, C
         lo = Math.min(lo, y); if (!dueSell().length) hi = y; }
       else { const t = lo + R(); if (dueBuy() > 0 && y >= t - 1e-9 && x < t + 1e-9) buyAll(gap ? b : t);
         hi = Math.max(hi, y); if (dueBuy() === 0) lo = y; reanchor(y); } } }
-  rows.forEach((r, i) => { day = i; boughtToday = soldToday = false;
+  rows.forEach((r, i) => { day = i; cal = r.d; boughtToday = soldToday = false;
     if (P.cons) { if (i > 0) move(rows[i - 1].c, r.c, true); }   // conservative: decide and fill on closes only (intraday order unknown)
     else { if (i > 0) move(rows[i - 1].c, r.o, P.gap);
       const path = r.c >= r.o ? [r.o, r.l, r.h, r.c] : [r.o, r.h, r.l, r.c];
       for (let s = 1; s < path.length; s++) move(path[s - 1], path[s], false); }
     if (P.cons) { if (boughtToday) hi = r.c; if (soldToday) lo = Math.max(lo, r.c); }   // the day's extremes after a fill are not used: their order is unknown
-    if (rungs.length >= MAX && r.c < ref * (1 - BAND)) lowDays++; last = r.c; });
+    if (rungs.length >= MAX && r.c < ref * (1 - BAND) && (i === rows.length - 1 || rows[i + 1].d !== cal)) lowDays++; last = r.c; });
   let unreal = 0; rungs.forEach(r => { unreal += r.q * (last - r.px); });
   return { realized, unreal, total: realized + unreal, bh: P.cap * (last / rows[0].o - 1), trades, reentries, from: rows[0].d, peak, rungs: rungs.length, lowDays, years: rows.length / 248, buys, sells, charges, orders }; }
 function gridSorted(rows) { const k = GRID.sort || 'in'; if (k === 'in') return rows; const val = r => r.err ? -Infinity : k === 'total' ? r.total : k === 'eff' ? (r.peak > 0 ? r.total / r.peak : -Infinity) : k === 'vsbh' ? r.total - r.bh : -r.total;
   return rows.slice().sort((a, b) => val(b) - val(a)); }
-async function gridRun() { if (GRID.running) return; const P = gridPrefs(), list = gridTickList(P.tickers).slice(0, 5000), botOnly = list.length > 300;
+async function gridRun() { if (GRID.running) return; const P = gridPrefs(), list = gridTickList(P.tickers).slice(0, 5000), botOnly = list.length > 300 || P.tf !== 'd';
+  if (P.tf !== 'd') { try { showToast('Loading intraday bars from GitHub…'); await gridIntraLoad(); } catch (e) { showToast(e.message, 'err'); return; } }
   if (!list.length) { showToast('Add tickers first', 'err'); return; }
   GRID.running = true; GRID.res = { at: new Date().toLocaleString('en-IN', { hour12: false }), P, rows: [], botOnly }; let i = 0, lastPaint = 0;
   if (botOnly) showToast(`${list.length} stocks: using the bot's own data only (no relays)`, 'ok');
   const worker = async () => { while (i < list.length) { const t = list[i++];
-      try { const rows = await gridFetch(t, P.start, P.end, botOnly); GRID.res.rows.push(rows.length > 20 ? Object.assign({ t, src: rows.src }, gridSim(rows, P)) : { t, err: 'NO DATA for this period' }); }
-      catch (e) { const m = e.message || ''; GRID.res.rows.push({ t, err: m === 'BOTONLY' ? 'Not in bot data — Sync on the Data tab, or test it in a list of 300 or fewer' : /404|Not found/.test(m) ? `NOT FOUND on Yahoo as ${gridYsym(t)}` : `Not in bot data for this period, and Yahoo relays failed — try a period of 1 year or less` }); }
+      try { const rows = await gridFetch(t, P.start, P.end, botOnly, P.tf); GRID.res.rows.push(rows.length > 20 ? Object.assign({ t, src: rows.src }, gridSim(rows, P)) : { t, err: 'NO DATA for this period' }); }
+      catch (e) { const m = e.message || ''; GRID.res.rows.push({ t, err: m === 'NOINTRA' ? 'No intraday bars — add it to tapebot/fetch/intraday_list.txt (PSU + top 150 liquid stocks are included)' : m === 'BOTONLY' ? 'Not in bot data — Sync on the Data tab, or test it in a list of 300 or fewer' : /404|Not found/.test(m) ? `NOT FOUND on Yahoo as ${gridYsym(t)}` : `Not in bot data for this period, and Yahoo relays failed — try a period of 1 year or less` }); }
       GRID.prog = `${GRID.res.rows.length}/${list.length}`;
       if (Date.now() - lastPaint > 700 || GRID.res.rows.length === list.length) { lastPaint = Date.now(); if (S.tab === 'grid') render(); await new Promise(r => setTimeout(r, 0)); } } };
   await Promise.all(botOnly ? [worker()] : [worker(), worker()]);
@@ -2093,6 +2113,7 @@ function gridView() { const P = gridPrefs(); if (!GRID.res) { try { GRID.res = J
       <label>Slippage % (round trip)<input id="grCost" type="number" step="0.01" value="${P.cost}"></label>
       <label>Brokerage ₹ / order<input id="grBrok" type="number" step="1" value="${P.brok}"></label>
       <label>Reversal confirm (steps, 0 = off)<input id="grRev" type="number" min="0" step="0.5" value="${P.rev}"></label>
+      <label>Price data<select id="grTf">${[['d', 'Daily (≈15 months)'], ['5m', 'Intraday 5-min (60 days)'], ['1m', 'Intraday 1-min (7 days)']].map(([k, l]) => `<option value="${k}" ${k === P.tf ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <label>Backtest period<select id="grPer">${GRID_PER.map(([k, l]) => `<option value="${k}" ${k === P.period ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <label>From<input id="grStart" type="date" value="${esc(P.start)}"></label>
       <label>To (blank = today)<input id="grEnd" type="date" value="${esc(P.end)}"></label>
@@ -2109,10 +2130,10 @@ function gridView() { const P = gridPrefs(); if (!GRID.res) { try { GRID.res = J
     <div class="grid" style="margin-top:8px">
       <label style="grid-column:1/-1">Ticker list (edit freely; up to 300 use Yahoo for long periods; above 300 use the bot's ~15 months of data only)<textarea id="grTick" rows="4" style="font-family:ui-monospace,monospace">${esc(P.tickers)}</textarea></label>
     </div>
-    <p class="small mut" style="margin:6px 0 0">Period ${esc(P.start)} → ${esc(P.end || 'today')}. Max rungs = band ÷ step = ${Math.round(P.band / P.step)}. Qty per rung = capital ÷ (rungs × Ref × (1 − band/2)). Re-anchors Ref when flat and price is above Ref. Charges per order: brokerage ₹${P.brok} + STT 0.1% buy & sell + NSE 0.00307% + SEBI 0.0001% + stamp 0.015% (buy) + 18% GST, and DP ₹15.34 per sell day.${P.cons ? ' <b>Conservative:</b> no same-day buy-and-sell of a rung; reversal mode decides and fills on daily closes only.' : ' <b>Optimistic path:</b> assumes low-before-high on green days — results will be inflated.'}${+P.rev > 0 ? ` <b>Reversal confirm ${P.rev} step(s):</b> rungs crossed on the way down are held as due and bought together only after price bounces ${P.rev} step(s) off its low; rungs one step in profit are sold together only after price drops ${P.rev} step(s) from its high (never below their buy price).` : ''}</p>
+    <p class="small mut" style="margin:6px 0 0">Period ${esc(P.start)} → ${esc(P.end || 'today')}. Max rungs = band ÷ step = ${Math.round(P.band / P.step)}. Qty per rung = capital ÷ (rungs × Ref × (1 − band/2)). Re-anchors Ref when flat and price is above Ref. Charges per order: brokerage ₹${P.brok} + STT 0.1% buy & sell + NSE 0.00307% + SEBI 0.0001% + stamp 0.015% (buy) + 18% GST, and DP ₹15.34 per sell day.${P.tf !== 'd' ? ` <b>Intraday ${P.tf === '5m' ? '5-min (last 60 days)' : '1-min (last 7 days)'} bars:</b> every bar is simulated, so same-day round trips count; same-day trades are charged intraday rates (brokerage 0.03% or ₹${P.brok}, whichever is lower; STT 0.025% on sell; stamp 0.003%), no DP. Conservative mode blocks only same-bar round trips and makes reversal decide on bar closes. Period dates are ignored.` : ''}${P.cons ? ' <b>Conservative:</b> no buy-and-sell of a rung within the same bar; reversal mode decides and fills on bar closes only.' : ' <b>Optimistic path:</b> assumes low-before-high on green days — results will be inflated.'}${+P.rev > 0 ? ` <b>Reversal confirm ${P.rev} step(s):</b> rungs crossed on the way down are held as due and bought together only after price bounces ${P.rev} step(s) off its low; rungs one step in profit are sold together only after price drops ${P.rev} step(s) from its high (never below their buy price).` : ''}</p>
     <div class="row" style="margin-top:10px;gap:8px"><button class="pri" id="grRun" style="flex:1 1 auto" ${GRID.running ? 'disabled' : ''}>${GRID.running ? `Running… ${GRID.prog}` : 'Run backtest'}</button>
       <button id="grCsv" style="flex:1 1 auto" ${R && ok.length ? '' : 'disabled'}>Export CSV</button></div></div>
-  ${R ? `<div class="card"><h3 style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">Results · ${ok.length} stocks · reversal ${+R.P.rev > 0 ? R.P.rev + ' step(s)' : 'off'} · ${esc(R.P.start)} → ${esc(R.P.end || 'today')} · run ${esc(R.at)} <select id="grSort" style="width:auto;margin-left:auto;font-weight:400">${[['in', 'Input order'], ['total', 'Total ₹ (high→low)'], ['eff', 'Total ÷ peak capital'], ['vsbh', 'Ladder minus B&H'], ['worst', 'Total ₹ (low→high)']].map(([k, l]) => `<option value="${k}" ${GRID.sort === k ? 'selected' : ''}>${l}</option>`).join('')}</select></h3>
+  ${R ? `<div class="card"><h3 style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">Results · ${ok.length} stocks · ${R.P.tf === '5m' ? '5-min bars' : R.P.tf === '1m' ? '1-min bars' : 'daily bars'} · reversal ${+R.P.rev > 0 ? R.P.rev + ' step(s)' : 'off'} · ${esc(R.P.start)} → ${esc(R.P.end || 'today')} · run ${esc(R.at)} <select id="grSort" style="width:auto;margin-left:auto;font-weight:400">${[['in', 'Input order'], ['total', 'Total ₹ (high→low)'], ['eff', 'Total ÷ peak capital'], ['vsbh', 'Ladder minus B&H'], ['worst', 'Total ₹ (low→high)']].map(([k, l]) => `<option value="${k}" ${GRID.sort === k ? 'selected' : ''}>${l}</option>`).join('')}</select></h3>
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px">
       ${[['Charges ₹ (incl. brokerage)', -sum('charges')], ['Realized ₹ (net of charges)', sum('realized')], ['Unrealized MTM ₹', sum('unreal')], ['Total P&amp;L ₹', sum('total')], ['Buy & hold P&amp;L ₹', sum('bh')]].map(([a, v]) => `<div class="card" style="margin:0;padding:10px"><div class="mut small">${a}</div><div style="font-size:17px;font-weight:600" class="${c(v)}">${n0(v)}</div></div>`).join('')}
       <div class="card" style="margin:0;padding:10px"><div class="mut small">Ladder beat B&amp;H</div><div style="font-size:17px;font-weight:600">${ok.filter(r => r.total > r.bh).length} / ${ok.length}</div></div>
@@ -2125,10 +2146,10 @@ function gridView() { const P = gridPrefs(); if (!GRID.res) { try { GRID.res = J
     <p class="small mut">B&amp;H invests the full capital on day 1; the ladder holds cash until rungs fill, so compare Total against Peak capital used, not just against B&amp;H.</p></div>` : ''}`; }
 function wireGrid() {
   const save = () => { const p = { cap: +$('#grCap').value || 100000, step: Math.max(0.1, +$('#grStep').value || 1), band: Math.max(1, +$('#grBand').value || 20), cost: Math.max(0, +$('#grCost').value), brok: Math.max(0, +$('#grBrok').value || 0), cons: $('#grCons').checked, rev: Math.max(0, +$('#grRev').value || 0),
-      start: $('#grStart').value || '2001-07-01', end: $('#grEnd').value || '', period: $('#grPer').value, gap: $('#grGap').checked, whole: $('#grWhole').checked, tickers: $('#grTick').value,
+      tf: $('#grTf').value, start: $('#grStart').value || '2001-07-01', end: $('#grEnd').value || '', period: $('#grPer').value, gap: $('#grGap').checked, whole: $('#grWhole').checked, tickers: $('#grTick').value,
       src: Object.fromEntries([...document.querySelectorAll('[data-grsrc]')].map(el => [el.dataset.grsrc, el.checked])) };
     if (p.end && p.end < p.start) { showToast('"To" date is before "From" date', 'err'); p.end = ''; } gridSavePrefs(p); return p; };
-  ['#grCap', '#grStep', '#grBand', '#grCost', '#grBrok', '#grCons', '#grRev', '#grGap', '#grWhole', '#grTick'].forEach(id => $(id).onchange = save);
+  ['#grCap', '#grStep', '#grBand', '#grCost', '#grBrok', '#grCons', '#grTf', '#grRev', '#grGap', '#grWhole', '#grTick'].forEach(id => $(id).onchange = save);
   document.querySelectorAll('[data-grsrc]').forEach(el => el.onchange = save);
   $('#grPer').onchange = () => { const s = gridPeriodStart($('#grPer').value); if (s) { $('#grStart').value = s; $('#grEnd').value = ''; } save(); render(); };
   ['#grStart', '#grEnd'].forEach(id => $(id).onchange = () => { $('#grPer').value = 'custom'; save(); render(); });
