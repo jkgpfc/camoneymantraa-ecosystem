@@ -1750,7 +1750,7 @@ function refreshHeader() {
 }
 
 /* ======================= VIEWS ======================= */
-const TABS = [['data', 'Data'], ['tone', 'Market tone'], ['indices', 'Indices'], ['commodities', 'Commodities'], ['intraday', 'Intraday'], ['btst', 'BTST'], ['swing', 'Swing'], ['short', 'Short term'], ['medium', 'Medium term'], ['long', 'Long term'], ['avoid', 'Avoid / Exit'], ['hold', 'My holdings'], ['search', 'Stock lookup'], ['rules', 'Rules'], ['paper', 'Paper trading'], ['algo', 'Algo test'], ['grid', 'Grid ladder'], ['journal', 'Journal'], ['settings', 'Settings'], ['logins', 'Logins']];
+const TABS = [['data', 'Data'], ['tone', 'Market tone'], ['indices', 'Indices'], ['commodities', 'Commodities'], ['psu', 'PSU stocks'], ['intraday', 'Intraday'], ['btst', 'BTST'], ['swing', 'Swing'], ['short', 'Short term'], ['medium', 'Medium term'], ['long', 'Long term'], ['avoid', 'Avoid / Exit'], ['hold', 'My holdings'], ['search', 'Stock lookup'], ['rules', 'Rules'], ['paper', 'Paper trading'], ['algo', 'Algo test'], ['grid', 'Grid ladder'], ['journal', 'Journal'], ['settings', 'Settings'], ['logins', 'Logins']];
 function renderNav() {
   $('#nav').innerHTML = TABS.filter(([k]) => k !== 'logins' || isAdmin()).map(([k, l]) => { const cnt = !S.out ? null : k === 'indices' ? (S.out.indices || []).filter(r => !/^(MCX|GLB)$/.test(r.series)).length : k === 'commodities' ? (S.out.indices || []).filter(r => /^(MCX|GLB)$/.test(r.series)).length : S.out.lists[k] ? S.out.lists[k].length : null; const n = cnt != null ? `<span class="n">${cnt}</span>` : ''; return `<a data-t="${k}" class="${S.tab === k ? 'on' : ''}">${l}${n}</a>`; }).join('');
   $('#nav').querySelectorAll('a').forEach(a => a.onclick = () => { S.tab = a.dataset.t; render(); });
@@ -1922,6 +1922,57 @@ Object.assign(VIEWS, VIEWS_MORE);
 VIEWS.paper = () => paperView();
 VIEWS.algo = () => algoView();
 VIEWS.grid = () => gridView();
+VIEWS.psu = () => psuView();
+/* ======================= PSU STOCKS — all listed government-majority companies in the bot's data =======================
+   Built-in list: central PSUs, PSU banks, PSU insurers and major state PSUs (editable below). Prices from the bot's daily data. */
+const PSU_LIST = {"SBIN":"PSU Bank","BANKBARODA":"PSU Bank","PNB":"PSU Bank","CANBK":"PSU Bank","UNIONBANK":"PSU Bank","BANKINDIA":"PSU Bank","INDIANB":"PSU Bank","CENTRALBK":"PSU Bank","IOB":"PSU Bank","UCOBANK":"PSU Bank","MAHABANK":"PSU Bank","PSB":"PSU Bank","IDBI":"PSU Bank","LICI":"Insurance","GICRE":"Insurance","NIACL":"Insurance","PFC":"PSU Finance","RECLTD":"PSU Finance","IRFC":"PSU Finance","IREDA":"PSU Finance","HUDCO":"PSU Finance","IFCI":"PSU Finance","ONGC":"Oil & Gas","IOC":"Oil & Gas","BPCL":"Oil & Gas","HINDPETRO":"Oil & Gas","GAIL":"Oil & Gas","OIL":"Oil & Gas","MRPL":"Oil & Gas","CHENNPETRO":"Oil & Gas","ENGINERSIN":"Oil & Gas","BALMLAWRIE":"Oil & Gas","NTPC":"Power","POWERGRID":"Power","NHPC":"Power","SJVN":"Power","NLCINDIA":"Power","NTPCGREEN":"Power","COALINDIA":"Metals & Mining","BHARATCOAL":"Metals & Mining","CMPDI":"Metals & Mining","NMDC":"Metals & Mining","NSLNISP":"Metals & Mining","MOIL":"Metals & Mining","KIOCL":"Metals & Mining","HINDCOPPER":"Metals & Mining","NATIONALUM":"Metals & Mining","SAIL":"Metals & Mining","MIDHANI":"Metals & Mining","HAL":"Defence & Shipbuilding","BEL":"Defence & Shipbuilding","BDL":"Defence & Shipbuilding","MAZDOCK":"Defence & Shipbuilding","COCHINSHIP":"Defence & Shipbuilding","GRSE":"Defence & Shipbuilding","BEML":"Defence & Shipbuilding","IRCTC":"Railways & Logistics","RVNL":"Railways & Logistics","IRCON":"Railways & Logistics","RAILTEL":"Railways & Logistics","RITES":"Railways & Logistics","CONCOR":"Railways & Logistics","SCI":"Railways & Logistics","SCILAL":"Railways & Logistics","DREDGECORP":"Railways & Logistics","BHEL":"Engineering & Infra","NBCC":"Engineering & Infra","HMT":"Engineering & Infra","ANDREWYU":"Engineering & Infra","RCF":"Fertilisers","FACT":"Fertilisers","NFL":"Fertilisers","MADRASFERT":"Fertilisers","MMTC":"Trading, Telecom & Others","STCINDIA":"Trading, Telecom & Others","MSTCLTD":"Trading, Telecom & Others","ITI":"Trading, Telecom & Others","MTNL":"Trading, Telecom & Others","ITDC":"Trading, Telecom & Others","J&KBANK":"State PSU","GSFC":"State PSU","GNFC":"State PSU","GIPCL":"State PSU","GUJALKALI":"State PSU","GMDCLTD":"State PSU","TNPL":"State PSU"};
+const PSU = { KEY: 'tb_psu_v1', cat: '', sort: 'y1' };
+function psuPrefs() { let p = {}; try { p = JSON.parse(localStorage.getItem(PSU.KEY) || '{}'); } catch (e) { } return Object.assign({ extra: '', hide: '' }, p); }
+function psuSavePrefs(p) { try { localStorage.setItem(PSU.KEY, JSON.stringify(p)); } catch (e) { } }
+function psuMap() { const P = psuPrefs(), m = Object.assign({}, PSU_LIST), sp = s => String(s || '').split(/[\s,;]+/).map(x => x.trim().toUpperCase()).filter(Boolean);
+  sp(P.extra).forEach(t => { if (!m[t]) m[t] = 'Added by you'; }); sp(P.hide).forEach(t => delete m[t]); return m; }
+function psuRow(t, cat) { const b = S.bars && S.bars.get(t); if (!b || !b.c || b.c.length < 2) return { t, cat, missing: true };
+  const c = b.c, n = c.length, last = c[n - 1], ch = k => n > k ? last / c[n - 1 - k] - 1 : null;
+  const hi = Math.max(...b.h.slice(-248)), lo = Math.min(...b.l.slice(-248));
+  const lists = !S.out ? [] : ['intraday', 'btst', 'swing', 'short', 'medium', 'long', 'avoid'].filter(k => (S.out.lists[k] || []).some(x => x.sym === t));
+  return { t, cat, name: b.name || '', last, d1: ch(1), m1: ch(21), m3: ch(63), y1: ch(247), fromHi: last / hi - 1, fromLo: last / lo - 1, lists, date: b.d[n - 1] }; }
+function psuView() { const m = psuMap(), all = Object.entries(m).map(([t, c]) => psuRow(t, c)), ok = all.filter(r => !r.missing);
+  const cats = [...new Set(Object.values(m))].sort(), rows = ok.filter(r => !PSU.cat || r.cat === PSU.cat);
+  const key = PSU.sort, dir = key === 't' ? 1 : -1; rows.sort((a, b) => key === 't' ? a.t.localeCompare(b.t) : ((b[key] ?? -9) - (a[key] ?? -9)) * (key === 'fromHi' ? 1 : 1));
+  const avg = (arr, f) => { const v = arr.map(r => r[f]).filter(x => x != null); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : null; };
+  const pc = x => x == null ? '–' : `<span class="${x >= 0 ? 'up' : 'dn'}">${(x >= 0 ? '+' : '') + fmt(100 * x, 1)}%</span>`;
+  const catRows = cats.map(c => { const r = ok.filter(x => x.cat === c); return { c, n: r.length, d1: avg(r, 'd1'), m1: avg(r, 'm1'), y1: avg(r, 'y1') }; }).filter(x => x.n).sort((a, b) => (b.y1 ?? -9) - (a.y1 ?? -9));
+  const kp = (a, v) => `<div class="card" style="margin:0;padding:10px"><div class="mut small">${a}</div><div style="font-size:17px;font-weight:600">${v}</div></div>`;
+  const P = psuPrefs();
+  return `<div class="note">All listed government-majority companies in the bot's data: central PSUs, PSU banks and insurers, and major state PSUs. Prices are the bot's daily closes${ok[0] ? ` (latest ${esc(ok[0].date)})` : ''}. Education only, not a recommendation.</div>
+  ${!S.bars || !S.bars.size ? '<div class="card">Load data in the <b>Data</b> tab (Sync) first.</div>' : `
+  <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:12px">
+    ${kp('PSU stocks', ok.length)}${kp('Up today', ok.filter(r => r.d1 > 0).length + ' / ' + ok.length)}${kp('Avg 1 month', pc(avg(ok, 'm1')))}${kp('Avg 1 year', pc(avg(ok, 'y1')))}${kp('Within 5% of 52-week high', ok.filter(r => r.fromHi > -0.05).length)}${kp('In bot buy lists', ok.filter(r => r.lists.some(k => k !== 'avoid')).length)}
+  </div>
+  <div class="card"><h3>By category (sorted by 1-year return)</h3><div class="tw"><table><thead><tr><th>Category</th><th class="num">Stocks</th><th class="num">Avg 1 day</th><th class="num">Avg 1 month</th><th class="num">Avg 1 year</th></tr></thead><tbody>
+    ${catRows.map(x => `<tr class="psucat" data-cat="${esc(x.c)}" style="cursor:pointer"><td><b>${esc(x.c)}</b></td><td class="num">${x.n}</td><td class="num">${pc(x.d1)}</td><td class="num">${pc(x.m1)}</td><td class="num">${pc(x.y1)}</td></tr>`).join('')}
+  </tbody></table></div></div>
+  <div class="card"><div class="row" style="flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px">
+      <h3 style="margin:0;flex:1 1 200px">PSU stocks · ${rows.length}${PSU.cat ? ' · ' + esc(PSU.cat) : ''}</h3>
+      <select id="psuCat" style="flex:0 1 220px"><option value="">All categories</option>${cats.map(c => `<option ${c === PSU.cat ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
+      <select id="psuSort" style="flex:0 1 200px">${[['y1', 'Sort: 1 year'], ['m3', 'Sort: 3 months'], ['m1', 'Sort: 1 month'], ['d1', 'Sort: today'], ['fromHi', 'Sort: nearest 52-week high'], ['t', 'Sort: A–Z']].map(([k, l]) => `<option value="${k}" ${k === PSU.sort ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <button id="psuGrid" style="flex:0 0 auto">Send these to Grid ladder</button></div>
+    <div class="tw"><table><thead><tr><th>Symbol</th><th>Category</th><th class="num">Close ₹</th><th class="num">Today</th><th class="num">1 month</th><th class="num">3 months</th><th class="num">1 year</th><th class="num">From 52w high</th><th class="num">From 52w low</th><th>In bot lists</th></tr></thead><tbody>
+    ${rows.map(r => `<tr class="click" data-sym="${esc(r.t)}"><td><b>${esc(r.t)}</b><div class="small mut">${esc((r.name || '').slice(0, 26))}</div></td><td class="small">${esc(r.cat)}</td><td class="num">${fmt(r.last)}</td><td class="num">${pc(r.d1)}</td><td class="num">${pc(r.m1)}</td><td class="num">${pc(r.m3)}</td><td class="num">${pc(r.y1)}</td><td class="num">${pc(r.fromHi)}</td><td class="num">${pc(r.fromLo)}</td><td>${r.lists.map(k => `<span class="chip">${k === 'avoid' ? 'Avoid' : k}</span>`).join('') || '<span class="mut small">–</span>'}</td></tr>`).join('')}
+    </tbody></table></div>
+    <p class="small mut">Tap a row for the chart and rules. ${all.filter(r => r.missing).length ? `Not in bot data: ${all.filter(r => r.missing).map(r => esc(r.t)).join(', ')}.` : ''}</p></div>
+  <div class="card"><h3>Edit the PSU list</h3><div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr))">
+    <label>Add symbols (comma separated)<input id="psuExtra" value="${esc(P.extra)}" placeholder="e.g. GSPL, GUJGASLTD"></label>
+    <label>Hide symbols<input id="psuHide" value="${esc(P.hide)}" placeholder="e.g. IDBI"></label></div></div>`}`; }
+function wirePsu() {
+  const c = $('#psuCat'); if (c) c.onchange = () => { PSU.cat = c.value; render(); };
+  const s = $('#psuSort'); if (s) s.onchange = () => { PSU.sort = s.value; render(); };
+  document.querySelectorAll('tr.psucat').forEach(tr => tr.onclick = () => { PSU.cat = tr.dataset.cat; render(); });
+  const save = () => { psuSavePrefs({ extra: $('#psuExtra').value, hide: $('#psuHide').value }); render(); };
+  ['#psuExtra', '#psuHide'].forEach(id => { const el = $(id); if (el) el.onchange = save; });
+  const g = $('#psuGrid'); if (g) g.onclick = () => { const m = psuMap(), list = Object.entries(m).filter(([t, cat]) => (!PSU.cat || cat === PSU.cat) && S.bars.get(t)).map(([t]) => t);
+    const p = gridPrefs(); p.tickers = list.join(', '); gridSavePrefs(p); S.tab = 'grid'; render(); showToast(`${list.length} PSU stocks sent to Grid ladder`, 'ok'); };
+}
 /* ======================= GRID LADDER — daily backtest (port of Jitender's Apps Script TickSim) =======================
    Buys one rung every STEP% below Ref down to BAND% (max rungs), sells each rung when price climbs back one step,
    re-anchors Ref when flat and price is above Ref. Education/backtest only — no orders.
@@ -2336,6 +2387,7 @@ const POST = {
   paper: () => wirePaper(),
   algo: () => wireAlgo(),
   grid: () => wireGrid(),
+  psu: () => wirePsu(),
   logins: () => { if (isAdmin()) loadLogins(); },
   data: () => { const fp = $('#fPrice'), ff = $('#fFund'), fs = $('#fSnap'); if (fp) fp.onchange = e => loadPriceFiles([...e.target.files]); if (ff) ff.onchange = e => e.target.files[0] && loadFundFile(e.target.files[0]); if (fs) fs.onchange = e => e.target.files[0] && loadDataSnapshot(e.target.files[0]); },
   rules: () => { const f = () => { const s = $('#rsrc').value, m = $('#rmode').value; $('#rbody').innerHTML = RULES.list.filter(r => (!s || r.src === s) && (!m || r.mode === m)).map(r => `<tr><td>${r.id}</td><td>${esc(r.src)}</td><td style="white-space:normal">${esc(r.rule)}</td><td><b>${r.mode}</b></td></tr>`).join(''); }; $('#rsrc').onchange = f; $('#rmode').onchange = f; f(); },
