@@ -1923,11 +1923,13 @@ VIEWS.paper = () => paperView();
 VIEWS.algo = () => algoView();
 /* ======================= ALGO TEST — ORB-Trail v1 (paper only, index options) =======================
    Rule-based intraday engine on 5-min index bars. Simulation for education; it never sends orders.
-   Option prices are modelled (Black-Scholes, fixed IV), not exchange quotes. */
+   Option prices: Black-Scholes on India VIX × user calibration, plus slippage and statutory charges. */
 const ALGO = { SYM: { BANKNIFTY: { y: '^NSEBANK', step: 100, lot: 30 }, NIFTY: { y: '^NSEI', step: 50, lot: 65 } },
   CFG: { orEnd: 570, noEntryAfter: 870, sqOff: 915, minRisk: 0.0015, maxRisk: 0.006, maxTrades: 2, emaLen: 20, r: 0.065 },
-  KEY: 'tb_algo_v1', timer: null, last: null, bt: null, log: [] };
-function algoPrefs() { let p = {}; try { p = JSON.parse(localStorage.getItem(ALGO.KEY + '_p') || '{}'); } catch (e) { } return Object.assign({ inst: 'BANKNIFTY', cap: 200000, risk: 1, lot: 30, iv: 14, poll: 60 }, p); }
+  KEY: 'tb_algo_v1', timer: null, last: null, bt: null, log: [], vixNow: null,
+  /* Statutory/exchange levies on option premium (sources: Budget 2026 STT 0.15% on sell premium w.e.f. 1-Apr-2026; NSE txn 0.0355299%, SEBI 0.0001%, stamp 0.003% buy, GST 18%) */
+  FEE: { stt: 0.0015, txn: 0.000355299, sebi: 0.000001, stamp: 0.00003, gst: 0.18 } };
+function algoPrefs() { let p = {}; try { p = JSON.parse(localStorage.getItem(ALGO.KEY + '_p') || '{}'); } catch (e) { } return Object.assign({ inst: 'BANKNIFTY', cap: 200000, risk: 1, lot: 30, iv: 14, poll: 60, slip: 0.5, brok: 20, mult: { BANKNIFTY: 1, NIFTY: 1 }, cal: {} }, p); }
 function algoSavePrefs(p) { try { localStorage.setItem(ALGO.KEY + '_p', JSON.stringify(p)); } catch (e) { } }
 function algoBook() { try { return JSON.parse(localStorage.getItem(ALGO.KEY) || '{}'); } catch (e) { return {}; } }
 function algoSaveBook(b) { try { localStorage.setItem(ALGO.KEY, JSON.stringify(b)); } catch (e) { } }
@@ -1940,18 +1942,21 @@ function algoT(day, minute) { const [y, m, dd] = day.split('-').map(Number); let
   return ((ex - Date.UTC(y, m - 1, dd)) / 864e5 + (930 - minute) / 1440) / 365; }
 function algoEma(a, n) { const k = 2 / (n + 1); let e = null; return a.map(x => e = e == null ? x : x * k + e * (1 - k)); }
 /* Deterministic replay of one session's completed 5-min bars. Same input -> same trades. */
-function algoRunDay(day, bars, p) {
+function algoRunDay(day, bars, p, ivAt) {
+  ivAt = ivAt || (() => p.iv);
   const C = ALGO.CFG, res = { date: day, trades: [], pos: null, orH: null, orL: null, ema: null, skip: 0 };
   const orb = bars.filter(b => b.m < C.orEnd); if (orb.length < 3) return res;
   res.orH = Math.max(...orb.map(b => b.h)); res.orL = Math.min(...orb.map(b => b.l));
   const e = algoEma(bars.map(b => b.c), C.emaLen); res.ema = e[e.length - 1];
   let pos = null, count = 0; const used = { 1: false, '-1': false };
-  const opt = (S, m) => algoBS(S, pos.K, algoT(day, m), p.iv, pos.dir === 1).p;
+  const opt = (S, m) => algoBS(S, pos.K, algoT(day, m), ivAt(m), pos.dir === 1).p * (1 - p.slip);   // sell fill = model − slippage
   const close = (qty, S, m, why) => { pos.legs.push({ qty, S, o: opt(S, m), why }); pos.open -= qty; };
   const finish = i => { let best = pos.legs[pos.legs.length - 1].S; bars.slice(i + 1).forEach(b => { best = pos.dir === 1 ? Math.max(best, b.h) : Math.min(best, b.l); });
     const q = pos.qty, s1 = pos.legs.reduce((s, l) => s + l.S * l.qty, 0) / q, o1 = pos.legs.reduce((s, l) => s + l.o * l.qty, 0) / q;
-    res.trades.push({ date: day, side: pos.dir === 1 ? 'CE' : 'PE', K: pos.K, lots: q / p.lot, s0: pos.s0, s1, o0: pos.o0, o1, R: (s1 - pos.s0) * pos.dir / pos.R,
-      pnl: pos.legs.reduce((s, l) => s + (l.o - pos.o0) * l.qty, 0), why: pos.legs.map(l => l.why).join(' + '), left: Math.max(0, (best - pos.legs[pos.legs.length - 1].S) * pos.dir) }); pos = null; };
+    const F = ALGO.FEE, buyV = pos.o0 * q, sellV = pos.legs.reduce((s, l) => s + l.o * l.qty, 0), gross = sellV - buyV;
+    const chg = (p.brok * (1 + pos.legs.length) + F.txn * (buyV + sellV) + F.sebi * (buyV + sellV)) * (1 + F.gst) + F.stamp * buyV + F.stt * sellV;
+    res.trades.push({ date: day, side: pos.dir === 1 ? 'CE' : 'PE', K: pos.K, lots: q / p.lot, s0: pos.s0, s1, o0: pos.o0, o1, R: (s1 - pos.s0) * pos.dir / pos.R, iv: pos.iv,
+      gross, chg, pnl: gross - chg, why: pos.legs.map(l => l.why).join(' + '), left: Math.max(0, (best - pos.legs[pos.legs.length - 1].S) * pos.dir) }); pos = null; };
   for (let i = 0; i < bars.length; i++) { const b = bars[i]; if (b.m < C.orEnd) continue;
     if (pos) { const d = pos.dir;
       if (d === 1 ? b.l <= pos.stop : b.h >= pos.stop) { close(pos.open, pos.stop, b.m, pos.half ? 'trail stop' : 'stop loss'); finish(i); continue; }
@@ -1964,55 +1969,77 @@ function algoRunDay(day, bars, p) {
     const w = bars.slice(Math.max(0, i - 2), i + 1); let stop = dir === 1 ? Math.min(...w.map(x => x.l)) : Math.max(...w.map(x => x.h)), R = Math.abs(b.c - stop);
     if (R / b.c > C.maxRisk) { res.skip++; continue; }
     if (R / b.c < C.minRisk) { R = b.c * C.minRisk; stop = b.c - dir * R; }
-    const K = Math.round(b.c / p.step) * p.step, g = algoBS(b.c, K, algoT(day, b.m), p.iv, dir === 1);
+    const K = Math.round(b.c / p.step) * p.step, iv0 = ivAt(b.m), g = algoBS(b.c, K, algoT(day, b.m), iv0, dir === 1);
     const lots = Math.floor(p.cap * p.risk / (R * Math.abs(g.d) * p.lot)); if (lots < 1) { res.skip++; continue; }
     used[dir] = true; count++;
-    pos = { dir, K, s0: b.c, o0: g.p, R, stop, t1: b.c + dir * R, qty: lots * p.lot, open: lots * p.lot, halfQty: Math.floor(lots / 2) * p.lot, half: false, legs: [] }; }
-  if (pos) { const lb = bars[bars.length - 1]; pos.mtm = algoBS(lb.c, pos.K, algoT(day, lb.m), p.iv, pos.dir === 1).p; res.pos = pos; }
+    pos = { dir, K, s0: b.c, o0: g.p * (1 + p.slip), iv: iv0, R, stop, t1: b.c + dir * R, qty: lots * p.lot, open: lots * p.lot, halfQty: Math.floor(lots / 2) * p.lot, half: false, legs: [] }; }
+  if (pos) { const lb = bars[bars.length - 1]; pos.mtm = algoBS(lb.c, pos.K, algoT(day, lb.m), ivAt(lb.m), pos.dir === 1).p * (1 - p.slip); res.pos = pos; }
   return res;
 }
-function algoParams() { const P = algoPrefs(), s = ALGO.SYM[P.inst]; return { inst: P.inst, y: s.y, step: s.step, lot: +P.lot || s.lot, cap: +P.cap, risk: (+P.risk) / 100, iv: (+P.iv) / 100, poll: +P.poll }; }
-async function algoFetch(range) { const p = algoParams();
-  const j = await px(yahooUrl(p.y, range, '5m'), { type: 'json', timeout: 15000, validate: yahooOK });
-  const R = j.chart && j.chart.result && j.chart.result[0]; if (!R || !R.timestamp) throw new Error('no 5-min bars returned');
+function algoParams() { const P = algoPrefs(), s = ALGO.SYM[P.inst]; return { inst: P.inst, y: s.y, step: s.step, lot: +P.lot || s.lot, cap: +P.cap, risk: (+P.risk) / 100, iv: (+P.iv) / 100, poll: +P.poll, slip: (+P.slip || 0) / 100, brok: +P.brok || 0, mult: (P.mult && P.mult[P.inst]) || 1 }; }
+function algoParse(j) { const R = j.chart && j.chart.result && j.chart.result[0]; if (!R || !R.timestamp) throw new Error('no 5-min bars returned');
   const q = R.indicators.quote[0], days = {};
   R.timestamp.forEach((t, i) => { if (q.close[i] == null || q.high[i] == null || q.low[i] == null) return; const d = new Date((t + 19800) * 1000), key = d.toISOString().slice(0, 10), m = d.getUTCHours() * 60 + d.getUTCMinutes();
     if (m < 555 || m >= 930) return; (days[key] = days[key] || []).push({ m, o: q.open[i], h: q.high[i], l: q.low[i], c: q.close[i] }); });
   return days; }
+/* Index bars + India VIX bars (same window). VIX failure is not fatal: engine falls back to the manual IV. */
+async function algoFetch(range) { const p = algoParams();
+  const j = await px(yahooUrl(p.y, range, '5m'), { type: 'json', timeout: 15000, validate: yahooOK });
+  let vix = {}; try { vix = algoParse(await px(yahooUrl('^INDIAVIX', range, '5m'), { type: 'json', timeout: 15000, validate: yahooOK })); } catch (e) { algoLog('India VIX unavailable — using manual IV (' + (e.message || '').slice(0, 80) + ')'); }
+  return { days: algoParse(j), vix }; }
+/* IV for a bar = India VIX at that minute × calibration multiplier; manual IV if VIX is missing. */
+function algoIvFn(vixBars, p) { if (!vixBars || !vixBars.length) return () => p.iv;
+  return m => { let v = vixBars[0].c; for (const x of vixBars) { if (x.m <= m) v = x.c; else break; } return Math.max(0.03, v / 100 * p.mult); }; }
 function algoNow() { const d = new Date(Date.now() + 19800e3); return { key: d.toISOString().slice(0, 10), m: d.getUTCHours() * 60 + d.getUTCMinutes() }; }
 async function algoTick() { const p = algoParams(), n = algoNow();
-  try { const days = await algoFetch('1d'), key = Object.keys(days).sort().pop(); if (!key) { algoLog('No 5-min bars yet'); return; }
+  try { const F = await algoFetch('1d'), days = F.days, key = Object.keys(days).sort().pop(); if (!key) { algoLog('No 5-min bars yet'); return; }
     let bars = days[key]; if (key === n.key) bars = bars.filter(b => b.m + 5 <= n.m);   // completed candles only
-    const r = algoRunDay(key, bars, p); r.spot = days[key][days[key].length - 1].c; r.inst = p.inst; r.at = new Date().toLocaleTimeString('en-IN', { hour12: false }); ALGO.last = r;
+    const vb = F.vix[key] || [], ivAt = algoIvFn(vb, p);
+    const r = algoRunDay(key, bars, p, ivAt); r.spot = days[key][days[key].length - 1].c; r.inst = p.inst; r.at = new Date().toLocaleTimeString('en-IN', { hour12: false });
+    r.vix = vb.length ? vb[vb.length - 1].c : null; r.ivNow = ivAt(days[key][days[key].length - 1].m); r.lastM = days[key][days[key].length - 1].m; r.day = key; ALGO.last = r; ALGO.vixNow = r.vix;
     const bk = algoBook(); bk[p.inst + '|' + key] = r.trades; algoSaveBook(bk);
-    algoLog(`${p.inst} ${key} · ${bars.length} bars · spot ${fmt(r.spot)} · ${r.trades.length} closed${r.pos ? ' · 1 open' : ''}`);
+    algoLog(`${p.inst} ${key} · ${bars.length} bars · spot ${fmt(r.spot)} · VIX ${r.vix ? fmt(r.vix) : 'n/a'} · model IV ${fmt(100 * r.ivNow, 1)}% · ${r.trades.length} closed${r.pos ? ' · 1 open' : ''}`);
   } catch (e) { algoLog('⚠ ' + (e.message || e).toString().slice(0, 200)); }
   if (S.tab === 'algo') render(); }
-async function algoBacktest() { const p = algoParams(), n = algoNow(); algoLog('Fetching 60 days of 5-min bars…');
-  try { const days = await algoFetch('60d'), ts = [], keys = Object.keys(days).sort();
-    keys.forEach(k => { if (k === n.key && n.m < 930) return; ts.push(...algoRunDay(k, days[k], p).trades); });
+async function algoBacktest() { const p = algoParams(), n = algoNow(); algoLog('Fetching 60 days of 5-min index + India VIX bars…');
+  try { const F = await algoFetch('60d'), days = F.days, ts = [], keys = Object.keys(days).sort(); let noVix = 0;
+    keys.forEach(k => { if (k === n.key && n.m < 930) return; if (!(F.vix[k] || []).length) noVix++; ts.push(...algoRunDay(k, days[k], p, algoIvFn(F.vix[k], p)).trades); });
     let eq = 0, pk = 0, dd = 0; ts.forEach(t => { eq += t.pnl; pk = Math.max(pk, eq); dd = Math.min(dd, eq - pk); });
-    const w = ts.filter(t => t.pnl > 0), l = ts.filter(t => t.pnl <= 0), sum = a => a.reduce((s, t) => s + t.pnl, 0);
-    ALGO.bt = { inst: p.inst, sessions: keys.length, from: keys[0], to: keys[keys.length - 1], ts, n: ts.length, win: ts.length ? w.length / ts.length : 0, net: sum(ts), avgW: w.length ? sum(w) / w.length : 0, avgL: l.length ? sum(l) / l.length : 0,
-      avgR: ts.length ? ts.reduce((s, t) => s + t.R, 0) / ts.length : 0, dd, cap: p.cap };
-    algoLog(`Backtest: ${ts.length} trades over ${keys.length} sessions, net ₹${fmt(ALGO.bt.net, 0)}`);
+    const w = ts.filter(t => t.pnl > 0), l = ts.filter(t => t.pnl <= 0), sum = (a, f = 'pnl') => a.reduce((s, t) => s + t[f], 0);
+    ALGO.bt = { inst: p.inst, sessions: keys.length, from: keys[0], to: keys[keys.length - 1], ts, n: ts.length, win: ts.length ? w.length / ts.length : 0, net: sum(ts), gross: sum(ts, 'gross'), chg: sum(ts, 'chg'), avgW: w.length ? sum(w) / w.length : 0, avgL: l.length ? sum(l) / l.length : 0,
+      avgR: ts.length ? ts.reduce((s, t) => s + t.R, 0) / ts.length : 0, dd, cap: p.cap, noVix };
+    algoLog(`Backtest: ${ts.length} trades over ${keys.length} sessions, net ₹${fmt(ALGO.bt.net, 0)} after ₹${fmt(ALGO.bt.chg, 0)} charges${noVix ? ` · ${noVix} days without VIX used manual IV` : ''}`);
   } catch (e) { algoLog('⚠ Backtest failed: ' + (e.message || e).toString().slice(0, 200)); }
   if (S.tab === 'algo') render(); }
-function algoRows(ts) { return ts.slice().reverse().map(t => `<tr><td>${t.date}</td><td class="${t.side === 'CE' ? 'up' : 'dn'}"><b>${t.side}</b></td><td class="num">${t.K}</td><td class="num">${t.lots}</td><td class="num">${fmt(t.s0)}</td><td class="num">${fmt(t.s1)}</td><td class="num">${fmt(t.o0)} → ${fmt(t.o1)}</td><td class="num ${t.R >= 0 ? 'up' : 'dn'}">${fmt(t.R)}</td><td class="num ${t.pnl >= 0 ? 'up' : 'dn'}">${fmt(t.pnl, 0)}</td><td class="small">${esc(t.why)}</td><td class="num">${fmt(t.left, 0)}</td></tr>`).join(''); }
-function algoTable(ts, empty) { return !ts.length ? `<p class="mut small">${empty}</p>` : `<div class="tw"><table><thead><tr><th>Date</th><th>Side</th><th class="num">Strike</th><th class="num">Lots</th><th class="num">Entry spot</th><th class="num">Exit spot</th><th class="num">Option in → out</th><th class="num">R</th><th class="num">P&amp;L ₹</th><th>Exit</th><th class="num">Left on table (pts)</th></tr></thead><tbody>${algoRows(ts)}</tbody></table></div>`; }
+/* Calibrate: back out implied vol from a real LTP the user reads off the broker screen, then set multiplier = IV ÷ VIX. */
+function algoImpliedVol(price, S, K, T, isCall) { let lo = 0.01, hi = 3; for (let i = 0; i < 80; i++) { const mid = (lo + hi) / 2; if (algoBS(S, K, T, mid, isCall).p > price) hi = mid; else lo = mid; } return (lo + hi) / 2; }
+async function algoCalibrate() { const P = algoPrefs(), K = +$('#alCalK').value, ltp = +$('#alCalLtp').value, isCall = $('#alCalT').value === 'CE';
+  if (!(K > 0 && ltp > 0)) { showToast('Enter strike and the real LTP', 'err'); return; }
+  if (!ALGO.last || ALGO.last.inst !== P.inst) { algoLog('Calibrate: fetching live spot and VIX first…'); await algoTick(); }
+  const r = ALGO.last; if (!r || !r.spot) { showToast('No live spot yet — try during market hours', 'err'); return; }
+  const n = algoNow(), T = algoT(r.day, r.day === n.key ? Math.min(n.m, 930) : r.lastM), iv = algoImpliedVol(ltp, r.spot, K, T, isCall);
+  if (!(iv > 0.015 && iv < 2.9)) { showToast('LTP is at/below intrinsic or unrealistic — use a near-ATM strike (deep ITM quotes are often stale)', 'err'); algoLog('Calibrate rejected: LTP gives no valid implied vol; pick a strike within ±2 strikes of spot'); return; }
+  const mult = r.vix ? iv / (r.vix / 100) : 1; P.mult = Object.assign({ BANKNIFTY: 1, NIFTY: 1 }, P.mult, { [P.inst]: +mult.toFixed(3) }); if (!r.vix) P.iv = +(100 * iv).toFixed(2);
+  P.cal = Object.assign({}, P.cal, { [P.inst]: { at: new Date().toLocaleString('en-IN', { hour12: false }), K, type: isCall ? 'CE' : 'PE', ltp, spot: r.spot, iv: 100 * iv, vix: r.vix } }); algoSavePrefs(P);
+  algoLog(`Calibrated ${P.inst}: ${K} ${isCall ? 'CE' : 'PE'} LTP ${fmt(ltp)} at spot ${fmt(r.spot)} → implied IV ${fmt(100 * iv, 1)}%${r.vix ? ` vs VIX ${fmt(r.vix)} → multiplier ${mult.toFixed(3)}` : ' (VIX n/a: set as manual IV)'}`);
+  render(); }
+function algoRows(ts) { return ts.slice().reverse().map(t => `<tr><td>${t.date}</td><td class="${t.side === 'CE' ? 'up' : 'dn'}"><b>${t.side}</b></td><td class="num">${t.K}</td><td class="num">${t.lots}</td><td class="num">${fmt(t.s0)}</td><td class="num">${fmt(t.s1)}</td><td class="num">${fmt(t.o0)} → ${fmt(t.o1)}</td><td class="num ${t.R >= 0 ? 'up' : 'dn'}">${fmt(t.R)}</td><td class="num">${fmt(t.iv * 100, 1)}%</td><td class="num">${fmt(t.gross, 0)}</td><td class="num dn">${fmt(t.chg, 0)}</td><td class="num ${t.pnl >= 0 ? 'up' : 'dn'}"><b>${fmt(t.pnl, 0)}</b></td><td class="small">${esc(t.why)}</td><td class="num">${fmt(t.left, 0)}</td></tr>`).join(''); }
+function algoTable(ts, empty) { return !ts.length ? `<p class="mut small">${empty}</p>` : `<div class="tw"><table><thead><tr><th>Date</th><th>Side</th><th class="num">Strike</th><th class="num">Lots</th><th class="num">Entry spot</th><th class="num">Exit spot</th><th class="num">Option in → out</th><th class="num">R</th><th class="num">IV used</th><th class="num">Gross ₹</th><th class="num">Charges ₹</th><th class="num">Net P&amp;L ₹</th><th>Exit</th><th class="num">Left on table (pts)</th></tr></thead><tbody>${algoRows(ts)}</tbody></table></div>`; }
 function algoView() { const P = algoPrefs(), r = ALGO.last, b = ALGO.bt, live = !!ALGO.timer;
   const bk = algoBook(), saved = Object.entries(bk).filter(([k]) => k.startsWith(P.inst + '|')).flatMap(([, v]) => v);
-  const pos = r && r.pos, lot = +P.lot || ALGO.SYM[P.inst].lot;
+  const pos = r && r.pos, lot = +P.lot || ALGO.SYM[P.inst].lot, cal = (P.cal || {})[P.inst], mult = (P.mult || {})[P.inst] || 1;
   const unreal = pos ? (pos.mtm - pos.o0) * pos.open + pos.legs.reduce((s, l) => s + (l.o - pos.o0) * l.qty, 0) : 0, today = r ? r.trades.reduce((s, t) => s + t.pnl, 0) + unreal : 0;
   const kp = (a, v) => `<div class="card" style="margin:0;padding:10px"><div class="mut small">${a}</div><div style="font-size:17px;font-weight:600">${v}</div></div>`;
-  return `<div class="note red"><b>Simulation for education only.</b> No order is sent to any broker. Option prices are modelled with Black-Scholes at a fixed IV, so real premiums, slippage and costs will differ. Nothing here is a recommendation to buy or sell.</div>
-  <div class="card"><h3>Algo test — ORB-Trail v1 (index options, paper)</h3>
+  return `<div class="note red"><b>Simulation for education only.</b> No order is sent to any broker. Option prices are modelled (Black-Scholes on live India VIX, calibrated to a real LTP you enter), with slippage and statutory charges deducted. Real fills can still differ. Nothing here is a recommendation to buy or sell.</div>
+  <div class="card"><h3>Algo test — ORB-Trail v1.1 (index options, paper)</h3>
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr))">
       <label>Index<select id="alInst">${Object.keys(ALGO.SYM).map(k => `<option ${k === P.inst ? 'selected' : ''}>${k}</option>`).join('')}</select></label>
       <label>Capital ₹<input id="alCap" type="number" value="${P.cap}"></label>
       <label>Risk / trade %<input id="alRisk" type="number" step="0.1" value="${P.risk}"></label>
       <label>Lot size<input id="alLot" type="number" value="${lot}"></label>
-      <label>Assumed IV %<input id="alIv" type="number" step="0.5" value="${P.iv}"></label>
+      <label>Fallback IV % (if VIX fails)<input id="alIv" type="number" step="0.5" value="${P.iv}"></label>
+      <label>Slippage % per side<input id="alSlip" type="number" step="0.1" value="${P.slip}"></label>
+      <label>Brokerage ₹ / order<input id="alBrok" type="number" step="1" value="${P.brok}"></label>
       <label>Poll (sec)<input id="alPoll" type="number" value="${P.poll}"></label>
     </div>
     <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">
@@ -2021,16 +2048,25 @@ function algoView() { const P = algoPrefs(), r = ALGO.last, b = ALGO.bt, live = 
       <button id="alClr" style="flex:1 1 auto;white-space:nowrap">Clear saved trades</button>
       <span class="mut small" style="align-self:center">${live ? `Live · refresh every ${P.poll}s${r ? ' · last ' + r.at : ''}` : 'Stopped'}</span>
     </div></div>
+  <div class="card"><h3>Calibrate to a real option price</h3>
+    <p class="small mut">Read any live ${esc(P.inst)} option LTP off your broker screen (near-ATM, current monthly expiry). The app backs out its implied volatility and sets IV = India VIX × multiplier for all pricing. Re-calibrate weekly or after big events.</p>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(110px,1fr))">
+      <label>Strike<input id="alCalK" type="number" step="${ALGO.SYM[P.inst].step}" value="${r && r.spot ? Math.round(r.spot / ALGO.SYM[P.inst].step) * ALGO.SYM[P.inst].step : ''}"></label>
+      <label>Type<select id="alCalT"><option>CE</option><option>PE</option></select></label>
+      <label>Real LTP ₹<input id="alCalLtp" type="number" step="0.05"></label>
+      <label>&nbsp;<button class="pri" id="alCal">Calibrate</button></label>
+    </div>
+    <p class="small ${cal ? '' : 'dn'}" style="margin:8px 0 0">${cal ? `Last: ${esc(cal.at)} · ${cal.K} ${cal.type} LTP ${fmt(cal.ltp)} at spot ${fmt(cal.spot)} → IV ${fmt(cal.iv, 1)}%${cal.vix ? ` vs VIX ${fmt(cal.vix)}` : ''} · multiplier <b>${fmt(mult, 3)}</b>` : `<b>Not calibrated</b> — multiplier ${fmt(mult, 3)} (IV = VIX). Calibrate once during market hours.`}</p></div>
   <div class="card"><h3>Live status ${r ? `· ${esc(r.inst)} · ${r.date}` : ''}</h3>
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px">
-      ${kp('Spot', r ? fmt(r.spot) : '–')}${kp('Opening range H / L', r && r.orH ? fmt(r.orH, 0) + ' / ' + fmt(r.orL, 0) : 'forming')}${kp('EMA20 (5-min)', r ? fmt(r.ema) : '–')}
+      ${kp('Spot', r ? fmt(r.spot) : '–')}${kp('Opening range H / L', r && r.orH ? fmt(r.orH, 0) + ' / ' + fmt(r.orL, 0) : 'forming')}${kp('EMA20 (5-min)', r ? fmt(r.ema) : '–')}${kp('India VIX → model IV', r ? `${r.vix ? fmt(r.vix) : 'n/a'} → ${fmt(100 * r.ivNow, 1)}%` : '–')}
       ${kp('Position', pos ? `<span class="${pos.dir === 1 ? 'up' : 'dn'}">${pos.dir === 1 ? 'CE' : 'PE'} ${pos.K} × ${pos.open / lot} lot</span>` : 'Flat')}
       ${kp('Stop (index)', pos ? fmt(pos.stop) : '–')}${kp('Today P&amp;L ₹', `<span class="${today >= 0 ? 'up' : 'dn'}">${fmt(today, 0)}</span>`)}
     </div></div>
   ${b && b.inst === P.inst ? `<div class="card"><h3>Backtest · ${b.sessions} sessions (${b.from} → ${b.to})</h3>
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px">
-      ${kp('Trades', b.n)}${kp('Win rate', fmt(100 * b.win, 0) + '%')}${kp('Net P&amp;L ₹', `<span class="${b.net >= 0 ? 'up' : 'dn'}">${fmt(b.net, 0)}</span>`)}${kp('Avg win ₹', fmt(b.avgW, 0))}${kp('Avg loss ₹', fmt(b.avgL, 0))}${kp('Avg R', fmt(b.avgR))}${kp('Max drawdown ₹', fmt(b.dd, 0))}${kp('Return on capital', fmt(100 * b.net / b.cap, 1) + '%')}
-    </div><p class="small mut">Before costs (brokerage, STT, slippage). Fixed-IV option pricing flatters days when IV drops.</p>${algoTable(b.ts, 'No trade met the rules in this window.')}</div>` : ''}
+      ${kp('Trades', b.n)}${kp('Win rate', fmt(100 * b.win, 0) + '%')}${kp('Gross ₹', fmt(b.gross, 0))}${kp('Charges ₹', fmt(b.chg, 0))}${kp('Net P&amp;L ₹', `<span class="${b.net >= 0 ? 'up' : 'dn'}">${fmt(b.net, 0)}</span>`)}${kp('Avg win ₹', fmt(b.avgW, 0))}${kp('Avg loss ₹', fmt(b.avgL, 0))}${kp('Avg R', fmt(b.avgR))}${kp('Max drawdown ₹', fmt(b.dd, 0))}${kp('Return on capital', fmt(100 * b.net / b.cap, 1) + '%')}
+    </div><p class="small mut">Net of slippage, brokerage, STT 0.15% on sell premium, NSE/SEBI fees, stamp duty and GST. Premiums are modelled from India VIX, not historical option quotes${b.noVix ? `; ${b.noVix} sessions had no VIX and used the fallback IV` : ''}.</p>${algoTable(b.ts, 'No trade met the rules in this window.')}</div>` : ''}
   <div class="card"><h3>Saved live paper trades · ${esc(P.inst)} (${saved.length})</h3>${algoTable(saved, 'None yet. Start the live paper test during market hours (09:15–15:30 IST).')}</div>
   <div class="card"><h3>Rules (no discretion)</h3><ol class="small" style="margin:0 0 0 18px;padding:0">
     <li>Opening range = 09:15–09:30 high and low. No trade before 09:30.</li>
@@ -2042,12 +2078,13 @@ function algoView() { const P = algoPrefs(), r = ALGO.last, b = ALGO.bt, live = 
     <li>If stop and target fall in the same candle, the stop is assumed hit first.</li></ol></div>
   <div class="card"><h3>Engine log</h3><div id="alLog" class="small mut" style="max-height:180px;overflow:auto;font-family:ui-monospace,monospace">${ALGO.log.map(x => `<div>${esc(x)}</div>`).join('')}</div></div>`; }
 function wireAlgo() {
-  const save = () => { const p = { inst: $('#alInst').value, cap: +$('#alCap').value || 200000, risk: +$('#alRisk').value || 1, lot: +$('#alLot').value || 30, iv: +$('#alIv').value || 14, poll: Math.max(20, +$('#alPoll').value || 60) }; algoSavePrefs(p); return p; };
+  const save = () => { const p = Object.assign(algoPrefs(), { inst: $('#alInst').value, cap: +$('#alCap').value || 200000, risk: +$('#alRisk').value || 1, lot: +$('#alLot').value || 30, iv: +$('#alIv').value || 14, poll: Math.max(20, +$('#alPoll').value || 60), slip: Math.max(0, +$('#alSlip').value), brok: Math.max(0, +$('#alBrok').value) }); algoSavePrefs(p); return p; };
   $('#alInst').onchange = () => { const p = save(); p.lot = ALGO.SYM[p.inst].lot; algoSavePrefs(p); ALGO.last = null; render(); };
-  ['#alCap', '#alRisk', '#alLot', '#alIv', '#alPoll'].forEach(id => $(id).onchange = save);
+  ['#alCap', '#alRisk', '#alLot', '#alIv', '#alPoll', '#alSlip', '#alBrok'].forEach(id => $(id).onchange = save);
   $('#alLive').onclick = () => { save(); if (ALGO.timer) { clearInterval(ALGO.timer); ALGO.timer = null; algoLog('Live test stopped'); render(); return; }
     ALGO.timer = setInterval(algoTick, algoPrefs().poll * 1000); algoLog('Live test started'); algoTick(); render(); };
   $('#alBT').onclick = () => { save(); algoBacktest(); };
+  $('#alCal').onclick = () => { save(); algoCalibrate(); };
   $('#alClr').onclick = () => { if (!confirm('Delete all saved live paper trades for the algo test?')) return; algoSaveBook({}); render(); };
 }
 
