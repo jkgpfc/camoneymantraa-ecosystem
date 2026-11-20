@@ -35,10 +35,13 @@ jobs:
       - run: pip install --quiet yfinance pandas requests
       - name: Build data
         run: cd tapebot/fetch && python build_data.py ../../out
+      - name: Build intraday bars (Grid ladder)
+        continue-on-error: true
+        run: cd tapebot/fetch && python intraday.py ../../out
       - name: Publish to data branch (single commit, no history growth)
         run: |
           cd out
-          mkdir -p ../publish/tapebot && cp prices.json.gz info.json ../publish/tapebot/ && for f in symbols.csv etfs.csv mcx_history.json news.json results.json; do [ -f "$f" ] && cp "$f" ../publish/tapebot/; done; true
+          mkdir -p ../publish/tapebot && cp prices.json.gz info.json ../publish/tapebot/ && for f in symbols.csv etfs.csv mcx_history.json news.json results.json intraday.json.gz; do [ -f "$f" ] && cp "$f" ../publish/tapebot/; done; true
           cd ../publish
           git init -q -b data
           git config user.name "tapebot-data"
