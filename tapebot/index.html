@@ -1929,16 +1929,21 @@ VIEWS.grid = () => gridView();
    (prev close → open) is now a path segment, so gap fills are handled once, at the open. */
 const GRID = { KEY: 'tb_grid_v1', running: false, res: null, prog: '' };
 function gridPrefs() { let p = {}; try { p = JSON.parse(localStorage.getItem(GRID.KEY + '_p') || '{}'); } catch (e) { }
-  return Object.assign({ cap: 100000, step: 1, band: 20, cost: 0.3, start: '2001-07-01', gap: false, whole: false, tickers: '' }, p); }
+  p = Object.assign({ cap: 100000, step: 1, band: 20, cost: 0.3, start: '2001-07-01', end: '', period: 'max', gap: false, whole: false, tickers: '' }, p);
+  p.src = Object.assign({ intraday: true, btst: true, swing: false, short: true, medium: true, long: true }, p.src); return p; }
+const GRID_SRC = [['intraday', 'Intraday'], ['btst', 'BTST'], ['swing', 'Swing'], ['short', 'Short term'], ['medium', 'Medium term'], ['long', 'Long term']];
+const GRID_PER = [['1y', '1 year', 1], ['3y', '3 years', 3], ['5y', '5 years', 5], ['10y', '10 years', 10], ['15y', '15 years', 15], ['max', 'Since 2001', 0], ['custom', 'Custom', -1]];
+function gridPeriodStart(code) { const x = GRID_PER.find(r => r[0] === code); if (!x || x[2] < 0) return null; if (x[2] === 0) return '2001-07-01'; const d = new Date(Date.now() + 19800e3); d.setUTCFullYear(d.getUTCFullYear() - x[2]); return d.toISOString().slice(0, 10); }
+function gridTickList(s) { const seen = new Set(), out = []; String(s || '').split(/[\s,;]+/).map(x => x.trim().toUpperCase()).filter(Boolean).forEach(x => { const k = gridYsym(x); if (!seen.has(k)) { seen.add(k); out.push(x); } }); return out; }
 function gridSavePrefs(p) { try { localStorage.setItem(GRID.KEY + '_p', JSON.stringify(p)); } catch (e) { } }
 function gridYsym(t) { t = String(t).trim().toUpperCase(); if (!t) return '';
   if (/^NSE:/.test(t)) return t.slice(4) + '.NS'; if (/^(BOM|BSE):/.test(t)) return t.replace(/^(BOM|BSE):/, '') + '.BO';
   if (/[.^=]/.test(t)) return t; return t + '.NS'; }
-async function gridFetch(t, startStr) { const j = await px(yahooUrl(gridYsym(t), 'max', '1d'), { type: 'json', timeout: 20000, validate: yahooOK });
+async function gridFetch(t, startStr, endStr) { const j = await px(yahooUrl(gridYsym(t), 'max', '1d'), { type: 'json', timeout: 20000, validate: yahooOK });
   const R = j.chart && j.chart.result && j.chart.result[0]; if (!R || !R.timestamp) throw new Error('no data');
-  const q = R.indicators.quote[0], from = Date.parse(startStr + 'T00:00:00Z') / 1000, rows = [];
+  const q = R.indicators.quote[0], from = Date.parse(startStr + 'T00:00:00Z') / 1000, to = endStr ? Date.parse(endStr + 'T23:59:59Z') / 1000 : Infinity, rows = [];
   R.timestamp.forEach((ts, i) => { const o = q.open[i], h = q.high[i], l = q.low[i], c = q.close[i];
-    if (ts + 19800 >= from && c > 0 && o > 0 && h >= l) rows.push({ d: new Date((ts + 19800) * 1000).toISOString().slice(0, 10), o, h, l, c }); });
+    if (ts + 19800 >= from && ts + 19800 <= to && c > 0 && o > 0 && h >= l) rows.push({ d: new Date((ts + 19800) * 1000).toISOString().slice(0, 10), o, h, l, c }); });
   return rows; }
 /* Same rules as simulate_() in the Sheets script, plus: overnight gap segment, optional whole shares, peak capital used. */
 function gridSim(rows, P) { const STEP = P.step / 100, BAND = P.band / 100, COST = P.cost / 100, MAX = Math.round(BAND / STEP);
@@ -1958,11 +1963,11 @@ function gridSim(rows, P) { const STEP = P.step / 100, BAND = P.band / 100, COST
     if (n >= MAX && r.c < ref * (1 - BAND)) lowDays++; });
   const last = rows[rows.length - 1].c; let unreal = 0; buyPx.forEach(b => { unreal += qty * (last - b); });
   return { realized, unreal, total: realized + unreal, bh: P.cap * (last / rows[0].o - 1), trades, reentries, from: rows[0].d, peak, rungs: n, lowDays, years: rows.length / 248 }; }
-async function gridRun() { if (GRID.running) return; const P = gridPrefs(), list = P.tickers.split(/[\s,;]+/).map(s => s.trim()).filter(Boolean).slice(0, 200);
+async function gridRun() { if (GRID.running) return; const P = gridPrefs(), list = gridTickList(P.tickers).slice(0, 300);
   if (!list.length) { showToast('Add tickers first', 'err'); return; }
   GRID.running = true; GRID.res = { at: new Date().toLocaleString('en-IN', { hour12: false }), P, rows: [] }; let i = 0;
   const worker = async () => { while (i < list.length) { const t = list[i++];
-      try { const rows = await gridFetch(t, P.start); GRID.res.rows.push(rows.length > 20 ? Object.assign({ t }, gridSim(rows, P)) : { t, err: 'NO DATA' }); }
+      try { const rows = await gridFetch(t, P.start, P.end); GRID.res.rows.push(rows.length > 20 ? Object.assign({ t }, gridSim(rows, P)) : { t, err: 'NO DATA' }); }
       catch (e) { const m = e.message || ''; GRID.res.rows.push({ t, err: /404|Not found/.test(m) ? `NOT FOUND on Yahoo as ${gridYsym(t)}` : 'ERROR: ' + m.slice(0, 60) }); }
       GRID.prog = `${GRID.res.rows.length}/${list.length}`; if (S.tab === 'grid') render(); } };
   await Promise.all([worker(), worker(), worker()]);
@@ -1979,15 +1984,25 @@ function gridView() { const P = gridPrefs(); if (!GRID.res) { try { GRID.res = J
       <label>Step % of Ref<input id="grStep" type="number" step="0.1" value="${P.step}"></label>
       <label>Band % (lower limit)<input id="grBand" type="number" step="1" value="${P.band}"></label>
       <label>Round-trip cost %<input id="grCost" type="number" step="0.01" value="${P.cost}"></label>
-      <label>Start date<input id="grStart" type="date" value="${esc(P.start)}"></label>
+      <label>Backtest period<select id="grPer">${GRID_PER.map(([k, l]) => `<option value="${k}" ${k === P.period ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label>From<input id="grStart" type="date" value="${esc(P.start)}"></label>
+      <label>To (blank = today)<input id="grEnd" type="date" value="${esc(P.end)}"></label>
       <label style="flex-direction:row;align-items:center;gap:6px"><input id="grGap" type="checkbox" ${P.gap ? 'checked' : ''}> Gap fills at open</label>
       <label style="flex-direction:row;align-items:center;gap:6px"><input id="grWhole" type="checkbox" ${P.whole ? 'checked' : ''}> Whole shares only</label>
-      <label style="grid-column:1/-1">Tickers (up to 200; RELIANCE, NSE:TCS, BOM:500325, ^NSEI)<textarea id="grTick" rows="4" style="font-family:ui-monospace,monospace">${esc(P.tickers)}</textarea></label>
+    </div></div>
+  <div class="card"><h3>Stocks to test · ${gridTickList(P.tickers).length}</h3>
+    <p class="small mut" style="margin:0 0 6px">From the bot's latest scan${S.out ? ` (${esc(S.out.at)})` : ''}:</p>
+    <div class="row" style="flex-wrap:wrap;gap:10px">${GRID_SRC.map(([k, l]) => `<label class="small" style="flex:0;flex-direction:row;align-items:center;gap:4px;white-space:nowrap;margin:0"><input type="checkbox" data-grsrc="${k}" ${P.src[k] ? 'checked' : ''}> ${l} (${S.out && S.out.lists[k] ? S.out.lists[k].length : 0})</label>`).join('')}</div>
+    ${S.out ? '' : '<div class="note red" style="margin-top:6px">No scan yet. Load data and press <b>Scan</b> first, then come back here.</div>'}
+    <div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap"><button id="grFromScan" style="flex:1 1 auto" ${S.out ? '' : 'disabled'}>Add ticked scan lists</button><button id="grClear" style="flex:1 1 auto">Clear list</button></div>
+    <div class="row" style="margin-top:8px;gap:8px"><input id="grAdd" placeholder="Add manually: e.g. PFC, RECLTD, NSE:TCS" style="flex:3"><button class="pri" id="grAddBtn" style="flex:1">Add</button></div>
+    <div class="grid" style="margin-top:8px">
+      <label style="grid-column:1/-1">Ticker list (edit freely; up to 300; RELIANCE, NSE:TCS, BOM:500325, ^NSEI)<textarea id="grTick" rows="4" style="font-family:ui-monospace,monospace">${esc(P.tickers)}</textarea></label>
     </div>
-    <p class="small mut" style="margin:6px 0 0">Max rungs = band ÷ step = ${Math.round(P.band / P.step)}. Qty per rung = capital ÷ (rungs × Ref × (1 − band/2)). Re-anchors Ref when flat and price is above Ref.</p>
+    <p class="small mut" style="margin:6px 0 0">Period ${esc(P.start)} → ${esc(P.end || 'today')}. Max rungs = band ÷ step = ${Math.round(P.band / P.step)}. Qty per rung = capital ÷ (rungs × Ref × (1 − band/2)). Re-anchors Ref when flat and price is above Ref.</p>
     <div class="row" style="margin-top:10px;gap:8px"><button class="pri" id="grRun" style="flex:1 1 auto" ${GRID.running ? 'disabled' : ''}>${GRID.running ? `Running… ${GRID.prog}` : 'Run backtest'}</button>
       <button id="grCsv" style="flex:1 1 auto" ${R && ok.length ? '' : 'disabled'}>Export CSV</button></div></div>
-  ${R ? `<div class="card"><h3>Results · ${ok.length} stocks · run ${esc(R.at)}</h3>
+  ${R ? `<div class="card"><h3>Results · ${ok.length} stocks · ${esc(R.P.start)} → ${esc(R.P.end || 'today')} · run ${esc(R.at)}</h3>
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px">
       ${[['Realized ₹', sum('realized')], ['Unrealized MTM ₹', sum('unreal')], ['Total P&amp;L ₹', sum('total')], ['Buy & hold P&amp;L ₹', sum('bh')]].map(([a, v]) => `<div class="card" style="margin:0;padding:10px"><div class="mut small">${a}</div><div style="font-size:17px;font-weight:600" class="${c(v)}">${n0(v)}</div></div>`).join('')}
       <div class="card" style="margin:0;padding:10px"><div class="mut small">Ladder beat B&amp;H</div><div style="font-size:17px;font-weight:600">${ok.filter(r => r.total > r.bh).length} / ${ok.length}</div></div>
@@ -2000,8 +2015,19 @@ function gridView() { const P = gridPrefs(); if (!GRID.res) { try { GRID.res = J
     <p class="small mut">B&amp;H invests the full capital on day 1; the ladder holds cash until rungs fill, so compare Total against Peak capital used, not just against B&amp;H.</p></div>` : ''}`; }
 function wireGrid() {
   const save = () => { const p = { cap: +$('#grCap').value || 100000, step: Math.max(0.1, +$('#grStep').value || 1), band: Math.max(1, +$('#grBand').value || 20), cost: Math.max(0, +$('#grCost').value),
-      start: $('#grStart').value || '2001-07-01', gap: $('#grGap').checked, whole: $('#grWhole').checked, tickers: $('#grTick').value }; gridSavePrefs(p); return p; };
-  ['#grCap', '#grStep', '#grBand', '#grCost', '#grStart', '#grGap', '#grWhole', '#grTick'].forEach(id => $(id).onchange = save);
+      start: $('#grStart').value || '2001-07-01', end: $('#grEnd').value || '', period: $('#grPer').value, gap: $('#grGap').checked, whole: $('#grWhole').checked, tickers: $('#grTick').value,
+      src: Object.fromEntries([...document.querySelectorAll('[data-grsrc]')].map(el => [el.dataset.grsrc, el.checked])) };
+    if (p.end && p.end < p.start) { showToast('"To" date is before "From" date', 'err'); p.end = ''; } gridSavePrefs(p); return p; };
+  ['#grCap', '#grStep', '#grBand', '#grCost', '#grGap', '#grWhole', '#grTick'].forEach(id => $(id).onchange = save);
+  document.querySelectorAll('[data-grsrc]').forEach(el => el.onchange = save);
+  $('#grPer').onchange = () => { const s = gridPeriodStart($('#grPer').value); if (s) { $('#grStart').value = s; $('#grEnd').value = ''; } save(); render(); };
+  ['#grStart', '#grEnd'].forEach(id => $(id).onchange = () => { $('#grPer').value = 'custom'; save(); render(); });
+  const addTo = arr => { const p = save(), list = gridTickList(p.tickers + ' ' + arr.join(' ')); p.tickers = list.join(', '); gridSavePrefs(p); render(); return list.length; };
+  $('#grFromScan').onclick = () => { if (!S.out) return; const p = save(), syms = []; GRID_SRC.forEach(([k]) => { if (p.src[k]) (S.out.lists[k] || []).forEach(x => syms.push(x.sym)); });
+    if (!syms.length) { showToast('Ticked lists are empty', 'err'); return; } const before = gridTickList(p.tickers).length, n = addTo(syms); showToast(`${n - before} new stocks added (${n} total)`, 'ok'); };
+  $('#grAddBtn').onclick = () => { const v = $('#grAdd').value; if (!v.trim()) return; addTo(v.split(/[\s,;]+/)); };
+  $('#grAdd').onkeydown = e => { if (e.key === 'Enter') $('#grAddBtn').click(); };
+  $('#grClear').onclick = () => { const p = save(); p.tickers = ''; gridSavePrefs(p); render(); };
   $('#grRun').onclick = () => { save(); gridRun(); };
   $('#grCsv').onclick = () => { const R = GRID.res; if (!R) return; const h = ['Ticker', 'Realized', 'Unrealized', 'Total', 'BH', 'RoundTrips', 'ReEntries', 'PeakCapital', 'RungsHeld', 'DaysBelowBand', 'DataFrom'];
     const lines = [h.join(',')].concat(R.rows.map(r => r.err ? [r.t, r.err].join(',') : [r.t, r.realized, r.unreal, r.total, r.bh, r.trades, r.reentries, r.peak, r.rungs, r.lowDays, r.from].map(x => typeof x === 'number' ? Math.round(x) : x).join(',')));
