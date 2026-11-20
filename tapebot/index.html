@@ -1948,8 +1948,10 @@ function gridBotRows(t, startStr, endStr) { if (typeof S === 'undefined' || !S.b
   rows.first = b.d[0]; return rows; }
 function gridRange(startStr) { const yrs = (Date.now() - Date.parse(startStr + 'T00:00:00Z')) / (365.25 * 864e5);
   return yrs <= 0.95 ? '1y' : yrs <= 1.95 ? '2y' : yrs <= 4.95 ? '5y' : yrs <= 9.95 ? '10y' : 'max'; }
-async function gridFetch(t, startStr, endStr) {
+function gridBotStocks() { if (!S.bars) return []; const out = []; for (const [k, b] of S.bars) { if (/[:^=]/.test(k) || /^(IDX|MCX|GLB)$/.test(b.series || '') || !b.d || b.d.length < 20) continue; out.push(k); } return out.sort(); }
+async function gridFetch(t, startStr, endStr, botOnly) {
   const bot = gridBotRows(t, startStr, endStr);
+  if (botOnly) { if (bot && bot.length > 20) { bot.src = bot.first <= addDaysStr(startStr, 7) ? 'bot data' : 'bot data (short)'; return bot; } throw new Error('BOTONLY'); }
   if (bot && bot.length && bot.first <= addDaysStr(startStr, 7)) { bot.src = 'bot data'; return bot; }
   try { const j = await px(yahooUrl(gridYsym(t), gridRange(startStr), '1d'), { type: 'json', timeout: 20000, validate: yahooOK });
     const R = j.chart && j.chart.result && j.chart.result[0]; if (!R || !R.timestamp) throw new Error('no data');
@@ -2005,14 +2007,18 @@ function gridSimRev(rows, P) { const STEP = P.step / 100, BAND = P.band / 100, C
     if (rungs.length >= MAX && r.c < ref * (1 - BAND)) lowDays++; last = r.c; });
   let unreal = 0; rungs.forEach(r => { unreal += r.q * (last - r.px); });
   return { realized, unreal, total: realized + unreal, bh: P.cap * (last / rows[0].o - 1), trades, reentries, from: rows[0].d, peak, rungs: rungs.length, lowDays, years: rows.length / 248, buys, sells }; }
-async function gridRun() { if (GRID.running) return; const P = gridPrefs(), list = gridTickList(P.tickers).slice(0, 300);
+function gridSorted(rows) { const k = GRID.sort || 'in'; if (k === 'in') return rows; const val = r => r.err ? -Infinity : k === 'total' ? r.total : k === 'eff' ? (r.peak > 0 ? r.total / r.peak : -Infinity) : k === 'vsbh' ? r.total - r.bh : -r.total;
+  return rows.slice().sort((a, b) => val(b) - val(a)); }
+async function gridRun() { if (GRID.running) return; const P = gridPrefs(), list = gridTickList(P.tickers).slice(0, 5000), botOnly = list.length > 300;
   if (!list.length) { showToast('Add tickers first', 'err'); return; }
-  GRID.running = true; GRID.res = { at: new Date().toLocaleString('en-IN', { hour12: false }), P, rows: [] }; let i = 0;
+  GRID.running = true; GRID.res = { at: new Date().toLocaleString('en-IN', { hour12: false }), P, rows: [], botOnly }; let i = 0, lastPaint = 0;
+  if (botOnly) showToast(`${list.length} stocks: using the bot's own data only (no relays)`, 'ok');
   const worker = async () => { while (i < list.length) { const t = list[i++];
-      try { const rows = await gridFetch(t, P.start, P.end); GRID.res.rows.push(rows.length > 20 ? Object.assign({ t, src: rows.src }, gridSim(rows, P)) : { t, err: 'NO DATA for this period' }); }
-      catch (e) { const m = e.message || ''; GRID.res.rows.push({ t, err: /404|Not found/.test(m) ? `NOT FOUND on Yahoo as ${gridYsym(t)}` : `Not in bot data for this period, and Yahoo relays failed — try a period of 1 year or less` }); }
-      GRID.prog = `${GRID.res.rows.length}/${list.length}`; if (S.tab === 'grid') render(); } };
-  await Promise.all([worker(), worker()]);
+      try { const rows = await gridFetch(t, P.start, P.end, botOnly); GRID.res.rows.push(rows.length > 20 ? Object.assign({ t, src: rows.src }, gridSim(rows, P)) : { t, err: 'NO DATA for this period' }); }
+      catch (e) { const m = e.message || ''; GRID.res.rows.push({ t, err: m === 'BOTONLY' ? 'Not in bot data — Sync on the Data tab, or test it in a list of 300 or fewer' : /404|Not found/.test(m) ? `NOT FOUND on Yahoo as ${gridYsym(t)}` : `Not in bot data for this period, and Yahoo relays failed — try a period of 1 year or less` }); }
+      GRID.prog = `${GRID.res.rows.length}/${list.length}`;
+      if (Date.now() - lastPaint > 700 || GRID.res.rows.length === list.length) { lastPaint = Date.now(); if (S.tab === 'grid') render(); await new Promise(r => setTimeout(r, 0)); } } };
+  await Promise.all(botOnly ? [worker()] : [worker(), worker()]);
   const order = new Map(list.map((t, k) => [t, k])); GRID.res.rows.sort((a, b) => order.get(a.t) - order.get(b.t));
   try { localStorage.setItem(GRID.KEY, JSON.stringify(GRID.res)); } catch (e) { }
   GRID.running = false; GRID.prog = ''; showToast('Grid ladder backtest done', 'ok'); if (S.tab === 'grid') render(); }
@@ -2037,22 +2043,22 @@ function gridView() { const P = gridPrefs(); if (!GRID.res) { try { GRID.res = J
     <p class="small mut" style="margin:0 0 6px">From the bot's latest scan${S.out ? ` (${esc(S.out.at)})` : ''}:</p>
     <div class="row" style="flex-wrap:wrap;gap:10px">${GRID_SRC.map(([k, l]) => `<label class="small" style="flex:0;flex-direction:row;align-items:center;gap:4px;white-space:nowrap;margin:0"><input type="checkbox" data-grsrc="${k}" ${P.src[k] ? 'checked' : ''}> ${l} (${S.out && S.out.lists[k] ? S.out.lists[k].length : 0})</label>`).join('')}</div>
     ${S.out ? '' : '<div class="note red" style="margin-top:6px">No scan yet. Load data and press <b>Scan</b> first, then come back here.</div>'}
-    <div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap"><button id="grFromScan" style="flex:1 1 auto" ${S.out ? '' : 'disabled'}>Add ticked scan lists</button><button id="grClear" style="flex:1 1 auto">Clear list</button></div>
+    <div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap"><button id="grFromScan" style="flex:1 1 auto" ${S.out ? '' : 'disabled'}>Add ticked scan lists</button><button id="grAll" style="flex:1 1 auto" ${gridBotStocks().length ? '' : 'disabled'}>Add all bot stocks (${gridBotStocks().length.toLocaleString('en-IN')})</button><button id="grClear" style="flex:1 1 auto">Clear list</button></div>
     <div class="row" style="margin-top:8px;gap:8px"><input id="grAdd" placeholder="Add manually: e.g. PFC, RECLTD, NSE:TCS" style="flex:3"><button class="pri" id="grAddBtn" style="flex:1">Add</button></div>
     <div class="grid" style="margin-top:8px">
-      <label style="grid-column:1/-1">Ticker list (edit freely; up to 300; RELIANCE, NSE:TCS, BOM:500325, ^NSEI)<textarea id="grTick" rows="4" style="font-family:ui-monospace,monospace">${esc(P.tickers)}</textarea></label>
+      <label style="grid-column:1/-1">Ticker list (edit freely; up to 300 use Yahoo for long periods; above 300 use the bot's ~15 months of data only)<textarea id="grTick" rows="4" style="font-family:ui-monospace,monospace">${esc(P.tickers)}</textarea></label>
     </div>
     <p class="small mut" style="margin:6px 0 0">Period ${esc(P.start)} → ${esc(P.end || 'today')}. Max rungs = band ÷ step = ${Math.round(P.band / P.step)}. Qty per rung = capital ÷ (rungs × Ref × (1 − band/2)). Re-anchors Ref when flat and price is above Ref.${+P.rev > 0 ? ` <b>Reversal confirm ${P.rev} step(s):</b> rungs crossed on the way down are held as due and bought together only after price bounces ${P.rev} step(s) off its low; rungs one step in profit are sold together only after price drops ${P.rev} step(s) from its high (never below their buy price).` : ''}</p>
     <div class="row" style="margin-top:10px;gap:8px"><button class="pri" id="grRun" style="flex:1 1 auto" ${GRID.running ? 'disabled' : ''}>${GRID.running ? `Running… ${GRID.prog}` : 'Run backtest'}</button>
       <button id="grCsv" style="flex:1 1 auto" ${R && ok.length ? '' : 'disabled'}>Export CSV</button></div></div>
-  ${R ? `<div class="card"><h3>Results · ${ok.length} stocks · reversal ${+R.P.rev > 0 ? R.P.rev + ' step(s)' : 'off'} · ${esc(R.P.start)} → ${esc(R.P.end || 'today')} · run ${esc(R.at)}</h3>
+  ${R ? `<div class="card"><h3 style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">Results · ${ok.length} stocks · reversal ${+R.P.rev > 0 ? R.P.rev + ' step(s)' : 'off'} · ${esc(R.P.start)} → ${esc(R.P.end || 'today')} · run ${esc(R.at)} <select id="grSort" style="width:auto;margin-left:auto;font-weight:400">${[['in', 'Input order'], ['total', 'Total ₹ (high→low)'], ['eff', 'Total ÷ peak capital'], ['vsbh', 'Ladder minus B&H'], ['worst', 'Total ₹ (low→high)']].map(([k, l]) => `<option value="${k}" ${GRID.sort === k ? 'selected' : ''}>${l}</option>`).join('')}</select></h3>
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px">
       ${[['Realized ₹', sum('realized')], ['Unrealized MTM ₹', sum('unreal')], ['Total P&amp;L ₹', sum('total')], ['Buy & hold P&amp;L ₹', sum('bh')]].map(([a, v]) => `<div class="card" style="margin:0;padding:10px"><div class="mut small">${a}</div><div style="font-size:17px;font-weight:600" class="${c(v)}">${n0(v)}</div></div>`).join('')}
       <div class="card" style="margin:0;padding:10px"><div class="mut small">Ladder beat B&amp;H</div><div style="font-size:17px;font-weight:600">${ok.filter(r => r.total > r.bh).length} / ${ok.length}</div></div>
       <div class="card" style="margin:0;padding:10px"><div class="mut small">Stuck at full band now</div><div style="font-size:17px;font-weight:600">${ok.filter(r => r.rungs >= Math.round(R.P.band / R.P.step)).length}</div></div>
     </div>
     <div class="tw" style="margin-top:10px"><table><thead><tr><th>Ticker</th><th class="num">Realized ₹</th><th class="num">Unrealized ₹</th><th class="num">Total ₹</th><th class="num">B&amp;H ₹</th><th class="num">Round-trips</th><th class="num">Re-entries</th><th class="num">Peak capital used ₹</th><th class="num">Rungs held now</th><th class="num">Days below band</th><th>Data from</th></tr></thead><tbody>
-    ${R.rows.map(r => r.err ? `<tr><td><b>${esc(r.t)}</b></td><td colspan="10" class="dn">${esc(r.err)}</td></tr>` : `<tr><td><b>${esc(r.t)}</b></td><td class="num ${c(r.realized)}">${n0(r.realized)}</td><td class="num ${c(r.unreal)}">${n0(r.unreal)}</td><td class="num ${c(r.total)}"><b>${n0(r.total)}</b></td><td class="num ${c(r.bh)}">${n0(r.bh)}</td><td class="num">${r.trades}</td><td class="num">${r.reentries}</td><td class="num">${n0(r.peak)}</td><td class="num">${r.rungs}</td><td class="num">${r.lowDays}</td><td>${r.from}<div class="small mut">${esc(r.src || '')}</div></td></tr>`).join('')}
+    ${gridSorted(R.rows).map(r => r.err ? `<tr><td><b>${esc(r.t)}</b></td><td colspan="10" class="dn">${esc(r.err)}</td></tr>` : `<tr><td><b>${esc(r.t)}</b></td><td class="num ${c(r.realized)}">${n0(r.realized)}</td><td class="num ${c(r.unreal)}">${n0(r.unreal)}</td><td class="num ${c(r.total)}"><b>${n0(r.total)}</b></td><td class="num ${c(r.bh)}">${n0(r.bh)}</td><td class="num">${r.trades}</td><td class="num">${r.reentries}</td><td class="num">${n0(r.peak)}</td><td class="num">${r.rungs}</td><td class="num">${r.lowDays}</td><td>${r.from}<div class="small mut">${esc(r.src || '')}</div></td></tr>`).join('')}
     <tr><td><b>TOTAL</b></td><td class="num"><b>${n0(sum('realized'))}</b></td><td class="num"><b>${n0(sum('unreal'))}</b></td><td class="num"><b>${n0(sum('total'))}</b></td><td class="num"><b>${n0(sum('bh'))}</b></td><td class="num">${sum('trades')}</td><td class="num">${sum('reentries')}</td><td colspan="4"></td></tr>
     </tbody></table></div>
     <p class="small mut">B&amp;H invests the full capital on day 1; the ladder holds cash until rungs fill, so compare Total against Peak capital used, not just against B&amp;H.</p></div>` : ''}`; }
@@ -2070,6 +2076,8 @@ function wireGrid() {
     if (!syms.length) { showToast('Ticked lists are empty', 'err'); return; } const before = gridTickList(p.tickers).length, n = addTo(syms); showToast(`${n - before} new stocks added (${n} total)`, 'ok'); };
   $('#grAddBtn').onclick = () => { const v = $('#grAdd').value; if (!v.trim()) return; addTo(v.split(/[\s,;]+/)); };
   $('#grAdd').onkeydown = e => { if (e.key === 'Enter') $('#grAddBtn').click(); };
+  const ga = $('#grAll'); if (ga) ga.onclick = () => { const all = gridBotStocks(); if (!all.length) return; const p = save(); p.tickers = all.join(', '); gridSavePrefs(p); showToast(`${all.length} stocks added — runs on bot data (about 15 months)`, 'ok'); render(); };
+  const gs = $('#grSort'); if (gs) gs.onchange = () => { GRID.sort = gs.value; render(); };
   $('#grClear').onclick = () => { const p = save(); p.tickers = ''; gridSavePrefs(p); render(); };
   $('#grRun').onclick = () => { save(); gridRun(); };
   $('#grCsv').onclick = () => { const R = GRID.res; if (!R) return; const h = ['Ticker', 'Realized', 'Unrealized', 'Total', 'BH', 'RoundTrips', 'ReEntries', 'PeakCapital', 'RungsHeld', 'DaysBelowBand', 'DataFrom'];
