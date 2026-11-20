@@ -1929,7 +1929,7 @@ VIEWS.grid = () => gridView();
    (prev close → open) is now a path segment, so gap fills are handled once, at the open. */
 const GRID = { KEY: 'tb_grid_v1', running: false, res: null, prog: '' };
 function gridPrefs() { let p = {}; try { p = JSON.parse(localStorage.getItem(GRID.KEY + '_p') || '{}'); } catch (e) { }
-  p = Object.assign({ cap: 100000, step: 1, band: 20, cost: 0.3, rev: 0, start: '2001-07-01', end: '', period: 'max', gap: false, whole: false, tickers: '' }, p);
+  p = Object.assign({ cap: 100000, step: 1, band: 20, cost: 0.3, rev: 0, start: gridPeriodStart('1y'), end: '', period: '1y', gap: false, whole: false, tickers: '' }, p);
   p.src = Object.assign({ intraday: true, btst: true, swing: false, short: true, medium: true, long: true }, p.src); return p; }
 const GRID_SRC = [['intraday', 'Intraday'], ['btst', 'BTST'], ['swing', 'Swing'], ['short', 'Short term'], ['medium', 'Medium term'], ['long', 'Long term']];
 const GRID_PER = [['1y', '1 year', 1], ['3y', '3 years', 3], ['5y', '5 years', 5], ['10y', '10 years', 10], ['15y', '15 years', 15], ['max', 'Since 2001', 0], ['custom', 'Custom', -1]];
@@ -1939,12 +1939,26 @@ function gridSavePrefs(p) { try { localStorage.setItem(GRID.KEY + '_p', JSON.str
 function gridYsym(t) { t = String(t).trim().toUpperCase(); if (!t) return '';
   if (/^NSE:/.test(t)) return t.slice(4) + '.NS'; if (/^(BOM|BSE):/.test(t)) return t.replace(/^(BOM|BSE):/, '') + '.BO';
   if (/[.^=]/.test(t)) return t; return t + '.NS'; }
-async function gridFetch(t, startStr, endStr) { const j = await px(yahooUrl(gridYsym(t), 'max', '1d'), { type: 'json', timeout: 20000, validate: yahooOK });
-  const R = j.chart && j.chart.result && j.chart.result[0]; if (!R || !R.timestamp) throw new Error('no data');
-  const q = R.indicators.quote[0], from = Date.parse(startStr + 'T00:00:00Z') / 1000, to = endStr ? Date.parse(endStr + 'T23:59:59Z') / 1000 : Infinity, rows = [];
-  R.timestamp.forEach((ts, i) => { const o = q.open[i], h = q.high[i], l = q.low[i], c = q.close[i];
-    if (ts + 19800 >= from && ts + 19800 <= to && c > 0 && o > 0 && h >= l) rows.push({ d: new Date((ts + 19800) * 1000).toISOString().slice(0, 10), o, h, l, c }); });
-  return rows; }
+/* Prices: 1) the bot's own daily bars (GitHub data branch, about 15 months, no relay) when they cover the period;
+   2) otherwise Yahoo for only the years needed; 3) if Yahoo fails, the bot's bars from their first date (shown in "Data from"). */
+function gridBotRows(t, startStr, endStr) { if (typeof S === 'undefined' || !S.bars) return null;
+  const k = String(t).trim().toUpperCase().replace(/^NSE:/, ''), b = S.bars.get(k); if (!b || !b.d || b.d.length < 20) return null;
+  const rows = []; for (let i = 0; i < b.d.length; i++) { const d = b.d[i], o = b.o[i], hi = b.h[i], lo = b.l[i], c = b.c[i];
+    if (d >= startStr && (!endStr || d <= endStr) && c > 0 && o > 0 && hi >= lo) rows.push({ d, o, h: hi, l: lo, c }); }
+  rows.first = b.d[0]; return rows; }
+function gridRange(startStr) { const yrs = (Date.now() - Date.parse(startStr + 'T00:00:00Z')) / (365.25 * 864e5);
+  return yrs <= 0.95 ? '1y' : yrs <= 1.95 ? '2y' : yrs <= 4.95 ? '5y' : yrs <= 9.95 ? '10y' : 'max'; }
+async function gridFetch(t, startStr, endStr) {
+  const bot = gridBotRows(t, startStr, endStr);
+  if (bot && bot.length && bot.first <= addDaysStr(startStr, 7)) { bot.src = 'bot data'; return bot; }
+  try { const j = await px(yahooUrl(gridYsym(t), gridRange(startStr), '1d'), { type: 'json', timeout: 20000, validate: yahooOK });
+    const R = j.chart && j.chart.result && j.chart.result[0]; if (!R || !R.timestamp) throw new Error('no data');
+    const q = R.indicators.quote[0], from = Date.parse(startStr + 'T00:00:00Z') / 1000, to = endStr ? Date.parse(endStr + 'T23:59:59Z') / 1000 : Infinity, rows = [];
+    R.timestamp.forEach((ts, i) => { const o = q.open[i], h = q.high[i], l = q.low[i], c = q.close[i];
+      if (ts + 19800 >= from && ts + 19800 <= to && c > 0 && o > 0 && h >= l) rows.push({ d: new Date((ts + 19800) * 1000).toISOString().slice(0, 10), o, h, l, c }); });
+    rows.src = 'Yahoo'; return rows;
+  } catch (e) { if (bot && bot.length > 20) { bot.src = 'bot data (short)'; return bot; } throw e; } }
+function addDaysStr(s, n) { const d = new Date(s + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
 /* Same rules as simulate_() in the Sheets script, plus: overnight gap segment, optional whole shares, peak capital used. */
 function gridSim(rows, P) { if (+P.rev > 0) return gridSimRev(rows, P); const STEP = P.step / 100, BAND = P.band / 100, COST = P.cost / 100, MAX = Math.round(BAND / STEP);
   let ref = rows[0].o, step = ref * STEP, qty = 0, day = 0, lastRe = -1, n = 0, realized = 0, trades = 0, reentries = 0, held = 0, peak = 0, lowDays = 0; const buyPx = [];
@@ -1995,17 +2009,17 @@ async function gridRun() { if (GRID.running) return; const P = gridPrefs(), list
   if (!list.length) { showToast('Add tickers first', 'err'); return; }
   GRID.running = true; GRID.res = { at: new Date().toLocaleString('en-IN', { hour12: false }), P, rows: [] }; let i = 0;
   const worker = async () => { while (i < list.length) { const t = list[i++];
-      try { const rows = await gridFetch(t, P.start, P.end); GRID.res.rows.push(rows.length > 20 ? Object.assign({ t }, gridSim(rows, P)) : { t, err: 'NO DATA' }); }
-      catch (e) { const m = e.message || ''; GRID.res.rows.push({ t, err: /404|Not found/.test(m) ? `NOT FOUND on Yahoo as ${gridYsym(t)}` : 'ERROR: ' + m.slice(0, 60) }); }
+      try { const rows = await gridFetch(t, P.start, P.end); GRID.res.rows.push(rows.length > 20 ? Object.assign({ t, src: rows.src }, gridSim(rows, P)) : { t, err: 'NO DATA for this period' }); }
+      catch (e) { const m = e.message || ''; GRID.res.rows.push({ t, err: /404|Not found/.test(m) ? `NOT FOUND on Yahoo as ${gridYsym(t)}` : `Not in bot data for this period, and Yahoo relays failed — try a period of 1 year or less` }); }
       GRID.prog = `${GRID.res.rows.length}/${list.length}`; if (S.tab === 'grid') render(); } };
-  await Promise.all([worker(), worker(), worker()]);
+  await Promise.all([worker(), worker()]);
   const order = new Map(list.map((t, k) => [t, k])); GRID.res.rows.sort((a, b) => order.get(a.t) - order.get(b.t));
   try { localStorage.setItem(GRID.KEY, JSON.stringify(GRID.res)); } catch (e) { }
   GRID.running = false; GRID.prog = ''; showToast('Grid ladder backtest done', 'ok'); if (S.tab === 'grid') render(); }
 function gridView() { const P = gridPrefs(); if (!GRID.res) { try { GRID.res = JSON.parse(localStorage.getItem(GRID.KEY) || 'null'); } catch (e) { } }
   const R = GRID.res, ok = R ? R.rows.filter(r => !r.err) : [], sum = f => ok.reduce((s, r) => s + r[f], 0);
   const n0 = (x) => fmt(x, 0), c = x => x >= 0 ? 'up' : 'dn';
-  return `<div class="note red"><b>Backtest for education only.</b> No orders are placed. Results use Yahoo split-adjusted daily prices; dividends, interest on idle cash and taxes are ignored. Past results do not predict future returns.</div>
+  return `<div class="note red"><b>Backtest for education only.</b> No orders are placed. Results use the bot's own daily prices (about 15 months, from your GitHub data) and, for longer periods, Yahoo split-adjusted prices; dividends, interest on idle cash and taxes are ignored. Past results do not predict future returns.</div>
   <div class="card"><h3>Grid ladder — buy every step down, sell each rung one step up</h3>
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr))">
       <label>Capital per stock ₹<input id="grCap" type="number" value="${P.cap}"></label>
@@ -2038,7 +2052,7 @@ function gridView() { const P = gridPrefs(); if (!GRID.res) { try { GRID.res = J
       <div class="card" style="margin:0;padding:10px"><div class="mut small">Stuck at full band now</div><div style="font-size:17px;font-weight:600">${ok.filter(r => r.rungs >= Math.round(R.P.band / R.P.step)).length}</div></div>
     </div>
     <div class="tw" style="margin-top:10px"><table><thead><tr><th>Ticker</th><th class="num">Realized ₹</th><th class="num">Unrealized ₹</th><th class="num">Total ₹</th><th class="num">B&amp;H ₹</th><th class="num">Round-trips</th><th class="num">Re-entries</th><th class="num">Peak capital used ₹</th><th class="num">Rungs held now</th><th class="num">Days below band</th><th>Data from</th></tr></thead><tbody>
-    ${R.rows.map(r => r.err ? `<tr><td><b>${esc(r.t)}</b></td><td colspan="10" class="dn">${esc(r.err)}</td></tr>` : `<tr><td><b>${esc(r.t)}</b></td><td class="num ${c(r.realized)}">${n0(r.realized)}</td><td class="num ${c(r.unreal)}">${n0(r.unreal)}</td><td class="num ${c(r.total)}"><b>${n0(r.total)}</b></td><td class="num ${c(r.bh)}">${n0(r.bh)}</td><td class="num">${r.trades}</td><td class="num">${r.reentries}</td><td class="num">${n0(r.peak)}</td><td class="num">${r.rungs}</td><td class="num">${r.lowDays}</td><td>${r.from}</td></tr>`).join('')}
+    ${R.rows.map(r => r.err ? `<tr><td><b>${esc(r.t)}</b></td><td colspan="10" class="dn">${esc(r.err)}</td></tr>` : `<tr><td><b>${esc(r.t)}</b></td><td class="num ${c(r.realized)}">${n0(r.realized)}</td><td class="num ${c(r.unreal)}">${n0(r.unreal)}</td><td class="num ${c(r.total)}"><b>${n0(r.total)}</b></td><td class="num ${c(r.bh)}">${n0(r.bh)}</td><td class="num">${r.trades}</td><td class="num">${r.reentries}</td><td class="num">${n0(r.peak)}</td><td class="num">${r.rungs}</td><td class="num">${r.lowDays}</td><td>${r.from}<div class="small mut">${esc(r.src || '')}</div></td></tr>`).join('')}
     <tr><td><b>TOTAL</b></td><td class="num"><b>${n0(sum('realized'))}</b></td><td class="num"><b>${n0(sum('unreal'))}</b></td><td class="num"><b>${n0(sum('total'))}</b></td><td class="num"><b>${n0(sum('bh'))}</b></td><td class="num">${sum('trades')}</td><td class="num">${sum('reentries')}</td><td colspan="4"></td></tr>
     </tbody></table></div>
     <p class="small mut">B&amp;H invests the full capital on day 1; the ladder holds cash until rungs fill, so compare Total against Peak capital used, not just against B&amp;H.</p></div>` : ''}`; }
